@@ -8,5 +8,6 @@ namespace SageBinaryData
         public W3DScriptedModelDrawModuleData Base;
         public Time RefreshTime;
         public Time SweepTime;
+        public SageBool AlwaysOn;
     }
 }
