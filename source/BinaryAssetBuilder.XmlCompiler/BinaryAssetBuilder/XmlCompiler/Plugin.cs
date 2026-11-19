@@ -149,6 +149,19 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(SpecialPowerTemplate), 0x5EF0ACA9u, false),
             (typeof(ObjectCreationList), 0x683D4DE5u, false),
             (typeof(FXList), 0xEBE8A8A4u, false),
+            (typeof(DamageFX), 0x4DF81EBDu, false),
+            (typeof(ExperienceLevelTemplate), 0xAE55047Bu, false),
+            (typeof(LogicCommand), 0x97D0A46Eu, false),
+            (typeof(LogicCommandSet), 0x6D148BD7u, false),
+            (typeof(StanceTemplate), 0x5C6E0E41u, false),
+            (typeof(RadiusCursorLibrary), 0xD62B490Fu, false),
+            (typeof(Weather), 0x368A8BA2u, false),
+            (typeof(Mouse), 0x73FE99B0u, false),
+            (typeof(MultiplayerColor), 0x966F336Au, false),
+            (typeof(OnlineChatColors), 0xF3645AA7u, false),
+            (typeof(ConnectionLineManager), 0x7AEB73B2u, false),
+            (typeof(PhaseEffect), 0x4877D566u, false),
+            (typeof(Road), 0xDCF3C28Bu, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
