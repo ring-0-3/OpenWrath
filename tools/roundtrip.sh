@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 # Round-trip validation harness for the native Linux decompiler.
 #
+# Two modes:
+#
+# (1) CLOSED-LOOP (default) — verify our own source round-trips through our own toolchain:
 #   tools/roundtrip.sh <source.xml-relative-to-dataroot> [--only NAME]
 #
-# Cycle:  compile source XML -> REF (manifest + .asset)      [reference bytes, as EA's BAB would produce]
-#         decompile REF      -> DEC.xml (one combined stream) [the thing under test]
-#         compile DEC.xml    -> NEW (manifest + .asset)       [does our XML reproduce the bytes?]
-#         byte-compare every asset's instance/relo/imp buffers, keyed by (TypeId, InstanceId).
+#   Cycle:  compile source XML -> REF (manifest + .asset)      [reference bytes, as EA's BAB would produce]
+#           decompile REF      -> DEC.xml (one combined stream) [the thing under test]
+#           compile DEC.xml    -> NEW (manifest + .asset)       [does our XML reproduce the bytes?]
+#           byte-compare every asset's instance/relo/imp buffers, keyed by (TypeId, InstanceId).
 #
-# A pass means the decompiler is loss-free for that asset: its XML recompiles to identical bytes.
+# (2) EXTERNAL-ORACLE — verify a COMPILED LINKED STREAM (EA's shipped data, or any mod) against its OWN bytes:
+#   tools/roundtrip.sh --from-binary <stream.manifest> [--only NAME] [--stringhashes SH]
+#
+#   The linked stream is <stream.manifest> plus its sibling .bin/.relo/.imp (same basename), which must be
+#   DECOMPRESSED (RefPack-expanded). Stream paths are BRING-YOUR-OWN — no EA data ships in this repo.
+#   Cycle:  decompile-stream <manifest> -> DEC/*.xml (one XML per asset) [the thing under test]
+#           compile each DEC xml        -> NEW (manifest + .asset)       [does our XML reproduce the bytes?]
+#           compare each asset to the ORIGINAL stream bytes via tools/compare-stream.py, bucketed per TypeId.
+#   StringHashes (module-id strings the binary stores only as one-way hashes) can be supplied with
+#   --stringhashes or the KW_STRINGHASHES env var; without it, module ids that hash-collide cannot round-trip.
+#
+# A pass means the toolchain is loss-free for an asset: its decompiled XML recompiles to identical bytes.
 # Requires: the built Debug/ BinaryAssetBuilder.dll + bab-decompile.dll, and the KW SDK XML tree.
 set -euo pipefail
 
@@ -20,14 +34,64 @@ DR="${KW_DATAROOT:-$HOME/kw-mod-sdk/KanesWrathXMLFiles}"
 BM="${KW_BASEMANIFESTS:-$HOME/kw-mod-sdk/base-manifests}"
 RM="$BM/global_common_2.manifest;$BM/static_common_2.manifest;$BM/global_english_2.manifest"
 
-SRC="${1:?source xml (relative to dataroot) required}"; shift || true
+MODE=source
+STREAM_MF=""
+if [[ "${1:-}" == "--from-binary" ]]; then
+  MODE=binary
+  STREAM_MF="${2:?--from-binary requires a <stream.manifest> path}"
+  shift 2
+else
+  SRC="${1:?source xml (relative to dataroot) required}"; shift || true
+fi
+
 ONLY=""
-if [[ "${1:-}" == "--only" ]]; then ONLY="$2"; fi
+SH_OVERRIDE="${KW_STRINGHASHES:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --only)         ONLY="$2"; shift 2;;
+    --stringhashes) SH_OVERRIDE="$2"; shift 2;;
+    *)              echo "  WARN: ignoring unknown arg '$1'"; shift;;
+  esac
+done
 
 export DOTNET_ROLL_FORWARD=LatestMajor DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 REF="$WORK/ref"; NEW="$WORK/new"; DECXML="$WORK/decompiled.xml"
+ONLYARG=(); [[ -n "$ONLY" ]] && ONLYARG=(--only "$ONLY")
+
+# ----------------------------------------------------------------------------------------------------
+# MODE 2: EXTERNAL-ORACLE — round-trip a shipped/mod LINKED stream against its own bytes.
+# ----------------------------------------------------------------------------------------------------
+if [[ "$MODE" == "binary" ]]; then
+  [[ -f "$STREAM_MF" ]] || { echo "  ERROR: stream manifest not found: $STREAM_MF"; exit 1; }
+  SHARG=(); [[ -n "$SH_OVERRIDE" && -f "$SH_OVERRIDE" ]] && SHARG=(--stringhashes "$SH_OVERRIDE")
+
+  echo "[1/3] decompile linked stream: $STREAM_MF${ONLY:+  (--only $ONLY)}"
+  mkdir -p "$WORK/dec"
+  dotnet "$DEC" decompile-stream "$STREAM_MF" --rm "$RM" --schema "$SCHEMA" \
+    "${SHARG[@]}" "${ONLYARG[@]}" --outdir "$WORK/dec" >"$WORK/dec.log" 2>&1 || true
+  mapfile -t XMLS < <(find "$WORK/dec" -maxdepth 1 -name '*.xml' | sort)
+  if [[ ${#XMLS[@]} -eq 0 ]]; then
+    echo "  ERROR: decompile-stream produced no XML"; tail -5 "$WORK/dec.log"; exit 1
+  fi
+
+  echo "[2/3] recompile ${#XMLS[@]} decompiled XML -> $NEW"
+  mkdir -p "$NEW"
+  c=0
+  for f in "${XMLS[@]}"; do
+    cp "$f" "$WORK/one.xml"
+    # Each XML recompiles standalone into its own subdir (so per-asset manifests don't clobber); the
+    # comparator globs NEW recursively. References resolve against the base manifests via -rm.
+    ( cd "$WORK" && dotnet "$BAB" "one.xml" -dr:"$WORK" -od:"$NEW/c$c" -sp:"$SCHEMA" -rm:"$RM" \
+        -sc:false -bc:false >>"$WORK/comp.log" 2>&1 || true )
+    c=$((c+1))
+  done
+
+  echo "[3/3] compare recompiled assets to ORIGINAL stream bytes"
+  python3 "$ROOT/tools/compare-stream.py" "$NEW" "$STREAM_MF" "${ONLYARG[@]}"
+  exit $?
+fi
 
 echo "[1/4] compile reference: $SRC"
 # -scd makes BAB emit StringHashes.xml (module tags / id strings the binary stores only as one-way hashes),
