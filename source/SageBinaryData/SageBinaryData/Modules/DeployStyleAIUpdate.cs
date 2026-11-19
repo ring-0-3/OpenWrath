@@ -14,5 +14,6 @@ namespace SageBinaryData
         public SageBool TurretsFunctionOnlyWhenDeployed;
         public SageBool TurretsMustCenterBeforePacking;
         public SageBool MustDeployToAttack;
+        public SageBool CannotUndeploy;
     }
 }
