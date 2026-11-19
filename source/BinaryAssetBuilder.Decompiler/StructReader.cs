@@ -157,7 +157,13 @@ namespace BinaryAssetBuilder.Decompiler
                 }
                 if (gtd == typeof(String<>))
                 {
-                    ReadString(ft.GetGenericArguments()[0], off, name, target, attrSet);
+                    // An inline String<> ({int Length; ptr Target}) authored as "" compiles to Length=0 with a
+                    // NON-null Target (a relocation at off+4) — an *allocated* empty string, distinct from an
+                    // omitted field (Length=0, null Target, no relocation). Emit "" only in the allocated case so
+                    // the recompile reproduces that relocation; otherwise drop it (same rule as the pointer-to-
+                    // String path in ReadPointerField).
+                    ReadString(ft.GetGenericArguments()[0], off, name, target, attrSet,
+                        emitEmpty: _asset.ReloFroms.Contains(off + 4));
                     return;
                 }
                 if (gtd == typeof(PolymorphicList<>))
