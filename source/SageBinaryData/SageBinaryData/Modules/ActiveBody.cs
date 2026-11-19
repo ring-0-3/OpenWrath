@@ -40,11 +40,11 @@ namespace SageBinaryData
         public AssetReference<AttributeModifier> ReallyDamagedAttributeModifier;
         public float CheerRadius;
         public AssetReference<FXList> BurningDeathFX;
+        public TypedAssetId<UpgradeTemplate> SecondChanceUpgrade;
+        public uint SecondChanceHeal;
         public unsafe Coord2D* GrabOffset;
         public List<DamageCreationList> DamageCreation;
         public List<DamageTriggerType> DamageTrigger;
-        public TypedAssetId<UpgradeTemplate> SecondChanceUpgrade;
-        public uint SecondChanceHeal;
         public SageBool UseDefaultDamageSettings;
         public SageBool RemoveUpgradesOnDeath;
         public SageBool BurningDeathBehavior;
