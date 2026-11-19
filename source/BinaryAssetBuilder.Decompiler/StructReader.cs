@@ -75,21 +75,37 @@ namespace BinaryAssetBuilder.Decompiler
             _asset.CheckRange(baseOff, layout.SizeX86, "struct " + t.Name);
             // Attributes the XSD declares for this type (null => schema unavailable/unknown => emit unfiltered).
             HashSet<string> attrSet = _schema?.GetDeclaredAttributeNames(t.Name);
+            // Child-element names for this type (for fields the XSD expects as elements, not attributes).
+            // Save/restore around the recursive walk so nested structs don't clobber the parent's set.
+            HashSet<string> savedElems = _curElems;
+            _curElems = _schema?.GetDeclaredElementNames(t.Name);
             foreach (TypeLayout.FieldLayout f in layout.Fields)
             {
                 ReadField(f, baseOff + f.X86Off, target, attrSet, refs);
             }
+            _curElems = savedElems;
         }
 
         // Emit an attribute only if the schema declares it for the current type (or the schema is unavailable).
         // Struct fields the XSD omits are always at their compile-default in real data, so skipping them keeps
         // the recompile byte-exact and avoids "attribute not declared" validation errors.
-        private static void SetAttr(XElement target, HashSet<string> attrSet, string name, string value)
+        // Declared child-element names of the struct currently being walked (set by ReadStructInto). A field the
+        // XSD expects as a child element rather than an attribute is emitted as <name>value</name> instead of
+        // being dropped by the attribute filter.
+        private HashSet<string> _curElems;
+
+        private void SetAttr(XElement target, HashSet<string> attrSet, string name, string value)
         {
             if (attrSet == null || name == "id" || attrSet.Contains(name))
             {
                 target.SetAttributeValue(name, value);
             }
+            else if (_curElems != null && _curElems.Contains(name))
+            {
+                // e.g. FXShaderConstantTexture.Value — an AssetReference the XSD declares as a <Value> element.
+                target.Add(new XElement(_ns + name, value));
+            }
+            // else: field not declared as attribute or element for this type -> at compile-default; safe to omit.
         }
 
         private void ReadField(TypeLayout.FieldLayout f, uint off, XElement target, HashSet<string> attrSet, System.Collections.Generic.List<RefAttr> refs)

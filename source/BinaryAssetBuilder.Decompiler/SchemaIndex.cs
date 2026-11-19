@@ -27,6 +27,7 @@ namespace BinaryAssetBuilder.Decompiler
         {
             public readonly List<string> OwnAttributes = new();
             public readonly List<string> AttributeGroupRefs = new();
+            public readonly List<string> OwnElements = new();
             public string BaseType;
         }
 
@@ -145,6 +146,16 @@ namespace BinaryAssetBuilder.Decompiler
                     string r = Local((string)e.Attribute("ref"));
                     if (r != null) c.AttributeGroupRefs.Add(r);
                 }
+                else if (e.Name == Xs + "element")
+                {
+                    // Direct child elements of THIS type only (not elements inside a nested inline complexType),
+                    // so we know which fields the XSD expects as child elements rather than attributes.
+                    string en = (string)e.Attribute("name");
+                    if (en != null && e.Ancestors(Xs + "complexType").FirstOrDefault() == root)
+                    {
+                        c.OwnElements.Add(en);
+                    }
+                }
                 else if ((e.Name == Xs + "extension" || e.Name == Xs + "restriction") && c.BaseType == null)
                 {
                     c.BaseType = Local((string)e.Attribute("base"));
@@ -181,6 +192,45 @@ namespace BinaryAssetBuilder.Decompiler
             Collect(typeName, names, new HashSet<string>(StringComparer.Ordinal));
             _resolvedAttrs[typeName] = names;
             return names;
+        }
+
+        private readonly Dictionary<string, HashSet<string>> _resolvedElems = new(StringComparer.Ordinal);
+
+        // Declared CHILD-ELEMENT local-names for a complex type (inherited base folded in). Used to emit a field
+        // the XSD expects as a child element (e.g. FXShaderConstantTexture.Value) as <name>value</name> rather
+        // than as an attribute (which the validator would reject). null if schema unavailable / type unknown.
+        public HashSet<string> GetDeclaredElementNames(string typeName)
+        {
+            if (!_available)
+            {
+                return null;
+            }
+            if (_resolvedElems.TryGetValue(typeName, out HashSet<string> cached))
+            {
+                return cached;
+            }
+            if (!_complexTypes.ContainsKey(typeName))
+            {
+                _resolvedElems[typeName] = null;
+                return null;
+            }
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            CollectElements(typeName, names, new HashSet<string>(StringComparer.Ordinal));
+            _resolvedElems[typeName] = names;
+            return names;
+        }
+
+        private void CollectElements(string typeName, HashSet<string> into, HashSet<string> visiting)
+        {
+            if (typeName == null || !visiting.Add(typeName))
+            {
+                return;
+            }
+            if (_complexTypes.TryGetValue(typeName, out ComplexType ct))
+            {
+                foreach (string el in ct.OwnElements) into.Add(el);
+                if (ct.BaseType != null) CollectElements(ct.BaseType, into, visiting);
+            }
         }
 
         private void Collect(string typeName, HashSet<string> into, HashSet<string> visiting)
