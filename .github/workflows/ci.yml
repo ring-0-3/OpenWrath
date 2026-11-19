@@ -1,0 +1,27 @@
+name: CI
+
+# Builds the compiler and decompiler on every push/PR. This needs NO EA game data — it only proves the code
+# compiles. The *data-dependent* correctness gate (tools/roundtrip.sh and tools/corpus-roundtrip.sh, which
+# compile/decompile real assets and assert byte-exact round-trips) runs LOCALLY / on a self-hosted runner,
+# because it requires your own legally-owned game data + SDK schemas, which cannot live in this repo or in CI.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      # Build the two entry points; this transitively builds their real dependencies
+      # (Core, Utility, SageBinaryData, XmlCompiler). The AudioCompiler / TextureCompiler plugins are NOT built
+      # here — they depend on native binaries that are not redistributed (bring-your-own); see SETUP.md.
+      - name: Build compiler (BinaryAssetBuilder)
+        run: dotnet build source/BinaryAssetBuilder/BinaryAssetBuilder.csproj -c Debug -p:Platform=x64
+      - name: Build decompiler (bab-decompile)
+        run: dotnet build source/bab-decompile/bab-decompile.csproj -c Debug -p:Platform=x64
