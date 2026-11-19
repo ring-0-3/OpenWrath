@@ -101,9 +101,35 @@ namespace BinaryAssetBuilder.Decompiler.Containers
         }
 
         // Read the 4-byte value stored at an instance offset (the pointer-offset or import id the writer laid down).
+        // Bounds-checked: a read past the instance end means the walk has desynced (e.g. the on-disk layout of
+        // this asset's type differs from our schema). We raise DesyncException so the caller can fall back to a
+        // raw block instead of crashing — the robustness property a schema-walking decompiler lacks.
         public uint ReadSlot(uint offset)
         {
+            if ((long)offset + 4 > Instance.Length)
+            {
+                throw new DesyncException($"read@{offset} past instance end ({Instance.Length})");
+            }
             return BitConverter.ToUInt32(Instance, (int)offset);
         }
+
+        // Validate that [offset, offset+len) lies inside the instance; throw a labelled DesyncException if not.
+        // Used before following a list/string/blob/pointer-array to a target region, so an implausible count or
+        // offset becomes a clean desync rather than an out-of-bounds crash or a huge allocation.
+        public void CheckRange(uint offset, long len, string what)
+        {
+            if (len < 0 || (long)offset + len > Instance.Length)
+            {
+                throw new DesyncException($"{what}@{offset} len {len} past instance end ({Instance.Length})");
+            }
+        }
+    }
+
+    // Raised when the binary read-walk steps outside the asset's instance data — the signal that the on-disk
+    // layout did not match the schema we walked it with (a foreign/mismatched-schema asset). The decompiler
+    // catches it per asset and emits a labelled <RawAsset> fallback, so one bad asset never aborts the stream.
+    public sealed class DesyncException : Exception
+    {
+        public DesyncException(string message) : base(message) { }
     }
 }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Xml.Linq;
 using BinaryAssetBuilder.Decompiler.Containers;
 
@@ -48,7 +50,7 @@ namespace BinaryAssetBuilder.Decompiler
             if (!_registry.TryGet(asset.TypeId, out Type type))
             {
                 error = $"unknown TypeId 0x{asset.TypeId:x8}";
-                return false; // Phase 5 turns this into a <RawAsset> block instead of a failure
+                return false;
             }
 
             var root = new XElement(AssetNs + type.Name);
@@ -60,6 +62,58 @@ namespace BinaryAssetBuilder.Decompiler
 
             document = new XDocument(new XElement(AssetNs + "AssetDeclaration", root));
             return true;
+        }
+
+        // Foreign-mod-robust decompile of a single asset. NEVER throws: an unknown type, a desync, or any other
+        // error becomes a labelled <RawAsset> fallback so one bad asset can never abort a whole stream. Returns
+        // the asset element (either the decompiled root or a <RawAsset>); `status` is one of
+        // ok | ok-unknownmodules | raw:unknown-type | raw:desync | raw:error; `unknownModules` counts
+        // <UnknownModule> placeholders emitted inside a successful decompile.
+        public XElement DecompileElement(AssetInput asset, out string status, out int unknownModules)
+        {
+            unknownModules = 0;
+            if (!_registry.TryGet(asset.TypeId, out Type type))
+            {
+                status = "raw:unknown-type";
+                return RawAsset(asset, "unknown-type");
+            }
+            try
+            {
+                var root = new XElement(AssetNs + type.Name);
+                if (!string.IsNullOrEmpty(asset.Name))
+                {
+                    root.SetAttributeValue("id", asset.Name);
+                }
+                new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings).ReadStruct(type, 0u, root);
+                unknownModules = root.Descendants(AssetNs + "UnknownModule").Count();
+                status = unknownModules > 0 ? "ok-unknownmodules" : "ok";
+                return root;
+            }
+            catch (DesyncException dx)
+            {
+                status = "raw:desync";
+                return RawAsset(asset, "desync: " + dx.Message);
+            }
+            catch (Exception ex)
+            {
+                status = "raw:error";
+                return RawAsset(asset, ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
+        private static XElement RawAsset(AssetInput a, string reason)
+        {
+            var e = new XElement(AssetNs + "RawAsset");
+            e.SetAttributeValue("TypeId", "0x" + a.TypeId.ToString("x8", CultureInfo.InvariantCulture));
+            e.SetAttributeValue("TypeHash", "0x" + a.TypeHash.ToString("x8", CultureInfo.InvariantCulture));
+            e.SetAttributeValue("InstanceId", "0x" + a.InstanceId.ToString("x8", CultureInfo.InvariantCulture));
+            if (!string.IsNullOrEmpty(a.Name))
+            {
+                e.SetAttributeValue("id", a.Name);
+            }
+            e.SetAttributeValue("reason", reason);
+            e.Value = Convert.ToBase64String(a.Instance);
+            return e;
         }
     }
 }

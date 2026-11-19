@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Xml;
 using System.Xml.Linq;
 using BinaryAssetBuilder.Core.Hashing;
@@ -30,6 +31,7 @@ namespace BinaryAssetBuilder.Decompiler.Cli
                 return args[0] switch
                 {
                     "decompile" => Decompile(args),
+                    "decompile-stream" => DecompileStream(args),
                     "info" => Info(args),
                     "layout" => Layout(args),
                     _ => Fail($"unknown verb '{args[0]}'"),
@@ -181,6 +183,114 @@ namespace BinaryAssetBuilder.Decompiler.Cli
             }
             Console.WriteLine($"decompiled={ok} skipped={skipped} failed={failed}");
             return failed == 0 ? 0 : 1;
+        }
+
+        // Decompile a whole LINKED stream (manifest + sibling .bin/.relo/.imp) with graceful degradation:
+        // every asset either decompiles or becomes a labelled <RawAsset>, and the run NEVER crashes on bad data.
+        // This is the foreign-mod robustness test (e.g. Second Isomer's ~44k-asset static_mod).
+        //   bab-decompile decompile-stream <manifest> [--rm ...] [--schema X] [--stringhashes X]
+        //                                  [--outdir DIR] [--only NAME]
+        private static int DecompileStream(string[] args)
+        {
+            string manifestPath = args[1];
+            string only = GetOption(args, "--only");
+            string outdir = GetOption(args, "--outdir");           // if set, write decompiled XML; else tally only
+            string schemaPath = GetOption(args, "--schema");
+            string rm = GetOption(args, "--rm");
+            string stringHashesPath = GetOption(args, "--stringhashes");
+
+            string baseNoExt = manifestPath.EndsWith(".manifest", StringComparison.OrdinalIgnoreCase)
+                ? manifestPath.Substring(0, manifestPath.Length - ".manifest".Length)
+                : manifestPath;
+            string binPath = baseNoExt + ".bin", reloPath = baseNoExt + ".relo", impPath = baseNoExt + ".imp";
+            foreach (string p in new[] { binPath, reloPath, impPath })
+            {
+                if (!File.Exists(p)) { return Fail($"missing stream file {p}"); }
+            }
+
+            Manifest m = Manifest.Load(manifestPath);
+            TypeRegistry reg = TypeRegistry.Build();
+            SchemaIndex schema = SchemaIndex.Load(schemaPath);
+            var refManifests = new List<Manifest> { m };
+            if (rm != null)
+            {
+                foreach (string p in rm.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    try { refManifests.Add(Manifest.Load(p.Trim())); }
+                    catch (Exception ex) { Console.Error.WriteLine($"  WARN ref manifest {p}: {ex.Message}"); }
+                }
+            }
+            ReferenceResolver resolver = ReferenceResolver.Build(refManifests);
+            StringHashTable strings = StringHashTable.Load(stringHashesPath);
+            var dec = new AssetDecompiler(reg, schema, resolver, strings);
+            if (outdir != null) { Directory.CreateDirectory(outdir); }
+
+            Console.WriteLine($"stream: {m.AssetCount} assets  (writing: {(outdir != null ? outdir : "tally-only")})");
+            var statusCounts = new Dictionary<string, int>();
+            int total = 0, unknownModules = 0, written = 0;
+            // TypeId -> set of distinct TypeHashes seen (schema-version awareness).
+            var typeHashes = new Dictionary<uint, HashSet<uint>>();
+            var typeCounts = new Dictionary<uint, int>();
+            var statusByType = new Dictionary<uint, int[]>(); // TypeId -> [okCount, rawCount]
+
+            int i = 0;
+            foreach (AssetInput asset in LinkedStreamReader.Read(m, binPath, reloPath, impPath))
+            {
+                i++;
+                if (!typeHashes.TryGetValue(asset.TypeId, out HashSet<uint> hs)) { hs = new HashSet<uint>(); typeHashes[asset.TypeId] = hs; }
+                hs.Add(asset.TypeHash);
+                typeCounts.TryGetValue(asset.TypeId, out int tc); typeCounts[asset.TypeId] = tc + 1;
+
+                if (only != null && !string.Equals(asset.Name, only, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                total++;
+                XElement el = dec.DecompileElement(asset, out string status, out int um);
+                statusCounts.TryGetValue(status, out int sc); statusCounts[status] = sc + 1;
+                unknownModules += um;
+                bool isOk = status.StartsWith("ok", StringComparison.Ordinal);
+                statusByType.TryGetValue(asset.TypeId, out int[] st); if (st == null) { st = new int[2]; statusByType[asset.TypeId] = st; }
+                st[isOk ? 0 : 1]++;
+
+                if (outdir != null)
+                {
+                    var doc = new XDocument(new XElement(AssetDecompiler.AssetNs + "AssetDeclaration", el));
+                    string fn = (asset.Name ?? asset.InstanceId.ToString("x8")) + ".xml";
+                    WriteXml(doc, Path.Combine(outdir, SafeName(fn)));
+                    written++;
+                }
+                if (only == null && (i % 5000 == 0)) { Console.WriteLine($"  ...{i}/{m.AssetCount}"); }
+            }
+
+            Console.WriteLine("---- summary ----");
+            Console.WriteLine($"processed={total}  unknownModulePlaceholders={unknownModules}  written={written}");
+            foreach (KeyValuePair<string, int> kv in statusCounts.OrderByDescending(k => k.Value))
+            {
+                Console.WriteLine($"  {kv.Key,-20} {kv.Value}");
+            }
+            Console.WriteLine("---- top types (count, name, distinct TypeHashes) ----");
+            foreach (KeyValuePair<uint, int> kv in typeCounts.OrderByDescending(k => k.Value).Take(15))
+            {
+                string name = reg.Get(kv.Key)?.Name ?? "(unknown)";
+                string hashes = string.Join(",", typeHashes[kv.Key].Select(h => h.ToString("x8")));
+                Console.WriteLine($"  0x{kv.Key:x8} {kv.Value,7}  {name,-28} [{hashes}]");
+            }
+            int multiSchema = typeHashes.Count(kv => kv.Value.Count > 1);
+            Console.WriteLine($"types with >1 distinct TypeHash (schema variants): {multiSchema}");
+            Console.WriteLine("---- biggest raw-fallback contributors (type: ok/raw) ----");
+            foreach (KeyValuePair<uint, int[]> kv in statusByType.OrderByDescending(k => k.Value[1]).Take(12))
+            {
+                string name = reg.Get(kv.Key)?.Name ?? "(unknown-type)";
+                Console.WriteLine($"  {name,-28} ok={kv.Value[0],-6} raw={kv.Value[1]}");
+            }
+            return 0; // completing without an unhandled crash is success; fallbacks are expected
+        }
+
+        private static string SafeName(string n)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars()) { n = n.Replace(c, '_'); }
+            return n;
         }
 
         private static void WriteXml(XDocument doc, string path)

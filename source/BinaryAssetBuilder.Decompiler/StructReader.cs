@@ -70,6 +70,9 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 return; // scalar/empty (e.g. BaseAssetType Size=4) — nothing to emit
             }
+            // Every struct's own bytes must lie within the instance. If a base offset lands past the end, the
+            // walk has desynced (foreign/mismatched schema) — bail to the raw fallback instead of reading garbage.
+            _asset.CheckRange(baseOff, layout.SizeX86, "struct " + t.Name);
             // Attributes the XSD declares for this type (null => schema unavailable/unknown => emit unfiltered).
             HashSet<string> attrSet = _schema?.GetDeclaredAttributeNames(t.Name);
             foreach (TypeLayout.FieldLayout f in layout.Fields)
@@ -218,6 +221,7 @@ namespace BinaryAssetBuilder.Decompiler
                 return; // empty list -> emit nothing
             }
             uint stride = TypeLayout.Get(elem).SizeX86;
+            _asset.CheckRange(itemsOff, (long)count * stride, "list<" + elem.Name + ">");
             Type elemGtd = elem.IsGenericType ? elem.GetGenericTypeDefinition() : null;
             if (elemGtd == typeof(TypedAssetId<>))
             {
@@ -290,6 +294,7 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 return null; // empty string -> matches an omitted attribute
             }
+            _asset.CheckRange(targetOff, charType == typeof(sbyte) ? length : (long)length * 2, "string");
             return charType == typeof(sbyte)
                 ? Encoding.ASCII.GetString(_asset.Instance, (int)targetOff, length)
                 : Encoding.Unicode.GetString(_asset.Instance, (int)targetOff, length * 2);
@@ -354,6 +359,7 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 return; // empty list -> emit nothing
             }
+            _asset.CheckRange(arrOff, (long)count * 4, "polylist<" + baseElem.Name + ">");
             _ = baseElem;
             var wrapper = new XElement(_ns + name);
             for (uint i = 0; i < count; i++)
@@ -376,7 +382,12 @@ namespace BinaryAssetBuilder.Decompiler
             uint hash = _asset.ReadSlot(itemOff);
             if (!_registry.TryGet(hash, out Type moduleType))
             {
-                wrapper.Add(new XComment($"unknown module 0x{hash:x8}"));
+                // Unknown module type (foreign/newer schema): emit a labelled placeholder and keep going, so the
+                // rest of the GameObject still decompiles. Counted in the stream summary.
+                var unknown = new XElement(_ns + "UnknownModule");
+                unknown.SetAttributeValue("TypeId", "0x" + hash.ToString("x8", CultureInfo.InvariantCulture));
+                unknown.SetAttributeValue("reason", "unknown-module");
+                wrapper.Add(unknown);
                 return true;
             }
             string elemName = _schema?.GetElementNameForType(moduleType.Name) ?? moduleType.Name;
@@ -394,6 +405,7 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 return;
             }
+            _asset.CheckRange(dataOff, size, "datablob");
             var bytes = new byte[size];
             Buffer.BlockCopy(_asset.Instance, (int)dataOff, bytes, 0, (int)size);
             SetAttr(target, attrSet, name, Convert.ToBase64String(bytes));
