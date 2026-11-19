@@ -215,7 +215,11 @@ namespace BinaryAssetBuilder.Core.Session
             {
                 documentItem = new FileItem
                 {
-                    HashItem = new FileHashItem(path, configuration, platform)
+                    // The cache key stays lower-cased (above), but the FileHashItem must touch the real file:
+                    // resolve to the actual on-disk casing so File.Exists / hashing work on case-sensitive
+                    // filesystems (Linux). Without this, mixed-case xi:include targets (e.g. data:GlobalData/
+                    // GlobalDefines.xml, or a relative FXListGDI.xml) were reported "not found".
+                    HashItem = new FileHashItem(BinaryAssetBuilder.Core.IO.CaseInsensitivePath.Resolve(path), configuration, platform)
                 };
                 if (documentItem.HashItem.Exists)
                 {
