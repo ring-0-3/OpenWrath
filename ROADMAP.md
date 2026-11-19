@@ -18,18 +18,26 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - ✅ Reference / import resolution to authored **names** (the lossless win over schema-walking decompilers).
 - ✅ Polymorphic module dispatch → **GameObjects byte-exact**, incl. construction yards.
 - ✅ Module-id / StringHash recovery via the compiler's `StringHashes.xml`.
-- 🔧 **Foreign-mod robustness & multi-schema** — decompile *any* third-party compiled stream without crashing:
-  TypeHash-based schema-version detection, and graceful degradation (emit a labeled raw/unknown block and keep
-  going instead of aborting the file). This retires the last reliance on Windows decompiling tools.
-- 📋 Master `StringHashes.xml` from a corpus compile, to recover inherited/base-object string values.
+- ✅ **Foreign-mod robustness** — decompiles *any* third-party compiled stream end-to-end without crashing
+  (verified on Second Isomer's full **43,994-asset** stream, zero crashes): bounds-checked reads, graceful
+  degradation (labeled `<RawAsset>`/`<UnknownModule>` blocks), TypeHash schema-version detection (single schema
+  confirmed across the test mod). This retires the last reliance on Windows decompiling tools.
+- 🔧 **Raise data-type coverage** — complete the partial gameplay structs surfaced by the corpus/stream runs:
+  the **GameObject** tail (a few fail at a fixed offset), plus ExperienceLevelTemplate, LogicCommand,
+  AIStrategicStateDefinition, and currently-unmodeled (`unknown-type`) gameplay types. Method: first-diff offset
+  → module → XSD → add field → re-verify. (Art/W3D/texture/particle types are **out of scope here** → art pipeline.)
+- 🔧 Master `StringHashes.xml` from a corpus compile, to recover inherited/base-object string values losslessly.
 
 ## Verification & reliability
 - ✅ `tools/roundtrip.sh` — decompile → recompile → assert byte-identical, per asset, manifest-driven.
 - ✅ Verified byte-exact: ArmorTemplate 207/207, LocomotorTemplate 79/79, AttributeModifier 78/78,
   WeaponTemplate 456/456, GameObjects incl. `GDIConstructionYard`.
-- 🔧 **Whole-corpus coverage** — round-trip the entire SDK asset tree, bucket by type, publish a per-type
-  pass/fail matrix with each lossy edge documented (no silent gaps).
-- 📋 **CI** — run the round-trip harness on every change so regressions in any type are caught immediately.
+- 🔧 **Whole-corpus coverage** — `tools/corpus-roundtrip.sh` + `docs/reference/COVERAGE.md` publish a *measured*
+  per-type matrix (currently **99.3% byte-exact across the 5 core gameplay types**; see the file for honest scope).
+  **Next:** compile source with include-context so the broader type space (FX, Upgrade, CommandSet, LogicCommand,
+  SpecialPower, …) is actually measured — turning "5 types" into a gameplay-wide number.
+- ✅ **CI** — builds the compiler + decompiler on every push/PR (`.github/workflows/`); the data-dependent
+  round-trip gate runs locally / self-hosted (EA data can't live in CI).
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
@@ -38,8 +46,9 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 
 ## Packaging & docs
 - 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no EA content).
-- 📋 **Docs & tutorials** — not a dumbed-down tool, but a teaching layer: "your first mod in 15 minutes," plus
-  explained write-ups of the engine internals we've reverse-engineered, so the format is *understood*, not hoarded.
+- 🔧 **Docs & tutorials** — the "Understanding OpenWrath" concept guide has started (`docs/`: the big picture +
+  asset streams); more chapters, "your first mod in 15 minutes," and explained write-ups of the **asset format**
+  we've reverse-engineered. Not a dumbed-down tool, but a teaching layer so the format is *understood*, not hoarded.
 
 ## Non-goals
 - Shipping EA game content or SDK assets. OpenWrath is interop tooling; you bring your own legally-owned data.
