@@ -20,8 +20,8 @@ Check: `dotnet --version`
 
 ## 2. Data you must supply (not in this repo)
 
-These are **EA / Mod-SDK material** — owned by EA, redistributed by the community SDK. We do not ship them.
-Obtain them from your own copy of the **Kane's Wrath Mod SDK** and your installed game.
+These are **EA / Mod-SDK material** — owned by EA. We do not ship them. Obtain them from your own licensed
+copy of the **Kane's Wrath Mod SDK** and your installed game.
 
 | What | Put it at (default) | Override with | Needed for |
 |------|--------------------|---------------|------------|
@@ -30,8 +30,7 @@ Obtain them from your own copy of the **Kane's Wrath Mod SDK** and your installe
 | **Base-stream manifests** (for cross-stream refs) | `~/kw-mod-sdk/base-manifests/` | `KW_BASEMANIFESTS` | resolving references into base-game streams (audio/art) |
 
 ### Where these come from
-- **Schemas + SDK XML:** the Kane's Wrath Mod SDK (community mirrors exist, e.g. a `KanesWrath-MODSDK`
-  repo; the upstream `BinaryAssetBuilder` project also carries a schema tree). Copy its `xsd` tree into
+- **Schemas + SDK XML:** from your own licensed copy of the Kane's Wrath Mod SDK. Copy its `xsd` tree into
   `schemas/kw/xsd/` (or point `KW_SCHEMA` at your `CnC3Types.xsd`).
 - **Base-stream manifests:** extract and RefPack-decompress the `.manifest` files from your installed game's
   base `.big` streams (`global_common_2`, `static_common_2`, `global_english_2`, …). These are used purely

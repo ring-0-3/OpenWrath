@@ -4,9 +4,8 @@ A **native-Linux, open modding toolchain for Command & Conquer 3: Kane's Wrath**
 byte-faithful asset **compiler** and a lossless **decompiler**, plus the stream/archive utilities needed to
 build a mod end to end. No Wine, no Windows VM.
 
-The point is to turn SAGE/KW modding from gatekept, Windows-only, tribal knowledge into something open,
-native, reproducible, and **learnable** — tools that come with their own proof that they work, and docs that
-explain the engine instead of hiding it.
+The point is to make working with Kane's Wrath's data open, native, reproducible, and **learnable** —
+tools that come with their own proof that they work, and docs that explain the format.
 
 ## What's here
 
@@ -45,9 +44,13 @@ tools/roundtrip.sh GlobalData/Armor.xml       # -> total=207 byte_exact=207 fail
 
 MIT licensed. **OpenWrath is a fork of [Qibbi/BinaryAssetBuilder](https://github.com/Qibbi/BinaryAssetBuilder)
 (MIT, © 2020 Jana Mohn)** — the upstream `LICENSE` is retained in full; the compiler is their work, the Linux
-port and the decompiler are ours. It contains **no EA game assets or SDK schemas**; those are reverse-engineered
-interop targets you bring yourself.
+port and the decompiler are ours. It contains **no EA game assets or SDK schemas**; those are interoperability
+targets you bring yourself.
 
 This toolchain was built with **AI assistance**, stated plainly — and backed by the byte-exact test suite above
 so correctness is verified mechanically rather than taken on trust. Audits, scrutiny, and contributions are
 welcome. Full details in **[NOTICE.md](NOTICE.md)**.
+
+Command & Conquer and Kane's Wrath are trademarks of Electronic Arts Inc. OpenWrath is an independent,
+fan-made interoperability project — not affiliated with, endorsed by, or sponsored by EA. Game and engine
+names are used nominatively, only to describe what the tools interoperate with.
