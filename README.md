@@ -27,6 +27,8 @@ Verified byte-exact so far:
 - **GameObjects** — including a full construction yard (`GDIConstructionYard`), the asset class other tools choke on.
 
 In progress: whole-corpus coverage reporting, and robust decompilation of arbitrary third-party mods.
+See **[ROADMAP.md](ROADMAP.md)** for what's done and what's planned (incl. the art/asset compilers, Nix
+packaging, and docs/tutorials).
 
 ## Quick start
 
