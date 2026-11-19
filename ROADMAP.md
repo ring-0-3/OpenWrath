@@ -22,10 +22,13 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   (verified on Second Isomer's full **43,994-asset** stream, zero crashes): bounds-checked reads, graceful
   degradation (labeled `<RawAsset>`/`<UnknownModule>` blocks), TypeHash schema-version detection (single schema
   confirmed across the test mod). This retires the last reliance on Windows decompiling tools.
-- 🔧 **Raise data-type coverage** — complete the partial gameplay structs surfaced by the corpus/stream runs:
-  the **GameObject** tail (a few fail at a fixed offset), plus ExperienceLevelTemplate, LogicCommand,
-  AIStrategicStateDefinition, and currently-unmodeled (`unknown-type`) gameplay types. Method: first-diff offset
-  → module → XSD → add field → re-verify. (Art/W3D/texture/particle types are **out of scope here** → art pipeline.)
+- 🔧 **Raise data-type coverage** — complete the partial gameplay structs, now measured against the game's
+  *shipped* bytes rather than guessed. The **GameObject** tail has had two structural bugs fixed this way — an
+  `ActiveBody` field-order error and the out-of-schema enum case (see below) — leaving a smaller residual tail
+  (a few epic units + `MedicalBay`/`CommandPost` variants, `AlienMillipedeBody`, `AlienCorrupter`,
+  `GDIDigInBuilding`). Plus ExperienceLevelTemplate, LogicCommand, AIStrategicStateDefinition, and currently
+  unmodeled (`unknown-type`) gameplay types. Method: first-diff offset → module → XSD → add/fix field → re-verify
+  against shipped bytes. (Art/W3D/texture/particle types are **out of scope here** → art pipeline.)
 - 🔧 Master `StringHashes.xml` from a corpus compile, to recover inherited/base-object string values losslessly.
 
 ## Verification & reliability
@@ -33,19 +36,40 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - ✅ Verified byte-exact (round-trip): ArmorTemplate 207/207, WeaponTemplate 456/456, LocomotorTemplate 79/79,
   AttributeModifier 78/78, UpgradeTemplate 186/186, SpecialPowerTemplate 258/258, ObjectCreationList 267/267,
   GameObjects incl. `GDIConstructionYard`.
-- 🔧 **Ground-truth validation — compiler output vs EA's *shipped* bytes (the "does it actually run" check).**
+- ✅ **Ground-truth verification — our output vs the game's *shipped* bytes** (`tools/roundtrip.sh --from-binary`).
   Round-trip proves the toolchain is internally *lossless*; this proves the output is *what the game actually
-  loads* — i.e. it compiles to valid, non-crashing assets. Method: diff our compiled output against the real
-  bytes in the game's shipped streams (not just decompile→recompile). Done for the foundational types + the core
-  engine, and confirmed end-to-end by mods that run in-game — but **extend the diff across all covered types** so
-  every "byte-exact round-trip" is backed by "byte-matches-what-ships." This is the measure that most directly
-  means *it runs in the game*, which is the thing that ultimately matters.
+  loads*. The gate decompiles a shipped (or mod) linked stream, recompiles it, and byte-compares every asset to
+  the original bytes, bucketed per type (byte-exact / same-size value-diff / size-mismatch, with first-diff
+  offsets). It has already surfaced and confirmed real toolchain bugs that round-trip alone could not (a
+  field-order error; out-of-schema enum values). Verified on `static_common`. 🔧 **Next:** extend across more
+  shipped streams, and *harvest* from it the set of values the shipped data uses that the authoring schema omits.
+- 🔧 **Tolerant-but-honest validation.** In places the authoring schema is a strict *subset* of what the game's
+  own shipped data uses (e.g. enum fields holding integer values the schema never names). Rather than refuse to
+  reproduce data the game itself ships and runs, the compiler accepts an out-of-schema integer value — but says
+  so, at the right volume: **informational** when the value is attested in shipped data, a loud **warning** when
+  it is novel and unverified. Tolerance + a single warning have landed; the info-vs-warning split awaits the
+  harvested attested-value set — **harvested from shipped data, never hardcoded**, so every "attested" claim is
+  backed by evidence.
 - 🔧 **Whole-corpus coverage** — `tools/corpus-roundtrip.sh` + `docs/reference/COVERAGE.md` publish a *measured*
   per-type matrix (currently **99.3% byte-exact across the 5 core gameplay types**; see the file for honest scope).
   **Next:** compile source with include-context so the broader type space (FX, Upgrade, CommandSet, LogicCommand,
   SpecialPower, …) is actually measured — turning "5 types" into a gameplay-wide number.
 - ✅ **CI** — builds the compiler + decompiler on every push/PR (`.github/workflows/`); the data-dependent
   round-trip gate runs locally / self-hosted (EA data can't live in CI).
+
+## Platform & extensibility
+OpenWrath is meant to be *built on* — both as a foundation other modding frameworks sit atop, and as a host for
+third-party **modules** that add capability. That makes its boundary a kind of public API, which shapes the work
+below. Each item rests on the same idea as the verification gate: correctness anyone can *check*, not merely trust.
+- 📋 **Structured diagnostics** — stable, machine-readable codes (not just prose), so tools built on OpenWrath can
+  react programmatically and tell *their* bug from ours.
+- 📋 **Machine-readable reliability map** — publish the per-type ground-truth bucket matrix as data, so a framework
+  can ask *what is proven reliable* before depending on it.
+- 📋 **Opt-in strict mode** — escalate the "novel / unverified value" warning to a hard error, giving downstream
+  frameworks and CI a provable guarantee: everything emitted is schema-named or shipped-attested.
+- 📋 **Documented module / extension API** — clean, stable seams for third-party handlers, formats, and renderers,
+  with the round-trip + ground-truth gate as the module's *acceptance test*, so a module's correctness is
+  decidable by anyone rather than taken on trust.
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
