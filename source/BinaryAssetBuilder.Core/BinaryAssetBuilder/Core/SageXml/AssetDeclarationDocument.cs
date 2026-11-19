@@ -1501,6 +1501,21 @@ namespace BinaryAssetBuilder.Core.SageXml
         {
             if (args.Exception is XmlSchemaValidationException exception)
             {
+                // Engine-tolerance: the authoring schema's enumeration facet is a strict SUBSET of the
+                // integer domain the game actually uses for some enum fields -- the game's own shipped data
+                // stores values the schema doesn't name, and reads these fields as raw integers. Rather than
+                // refuse to reproduce data the game itself ships and runs, accept an integer value that fails
+                // ONLY the enumeration facet (with a loud warning). Non-integer and other-facet failures stay
+                // hard errors, so genuine authoring mistakes are still caught.
+                if (TryGetRelaxableEnumValue(exception, out string detail))
+                {
+                    _tracer.TraceWarning(
+                        "Out-of-schema enum value accepted in '{0}': {1}. This value is not in the schema's named " +
+                        "set; the field is treated as a raw integer. If hand-authored, it is undefined by the schema " +
+                        "and its in-game effect is unverified -- yours to validate.",
+                        SourcePath, detail);
+                    return;
+                }
                 LinkedListNode<XmlNodeWithMetaData> node = _current.NodeSourceInfoSet.Find(new XmlNodeWithMetaData(exception.SourceObject as XmlNode, 0));
                 if (node?.Value is not null)
                 {
@@ -1512,6 +1527,38 @@ namespace BinaryAssetBuilder.Core.SageXml
                 }
             }
             throw new BinaryAssetBuilderException(args.Exception, ErrorCode.SchemaValidation, "XML validation error encountered in '{0}'", SourcePath);
+        }
+
+        // True only for the narrow "integer value that fails just the enumeration facet" case described in
+        // HandleValidationEvents. Message-based detection fails SAFE: if the phrasing is not recognized the
+        // caller keeps the original hard error, so this can never wrongly accept a non-enumeration failure.
+        private static bool TryGetRelaxableEnumValue(XmlSchemaValidationException exception, out string detail)
+        {
+            detail = null;
+            string message = exception?.Message ?? string.Empty;
+            if (message.IndexOf("Enumeration constraint", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+            const string marker = "The value '";
+            int start = message.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return false;
+            }
+            start += marker.Length;
+            int end = message.IndexOf('\'', start);
+            if (end < 0)
+            {
+                return false;
+            }
+            string value = message.Substring(start, end - start);
+            if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+            {
+                return false;
+            }
+            detail = message.Substring(0, end + 1).Trim();
+            return true;
         }
 
         public void Validate()
