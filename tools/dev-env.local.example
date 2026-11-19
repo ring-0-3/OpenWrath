@@ -1,0 +1,15 @@
+# Copy to tools/dev-env.local (git-ignored) and set YOUR machine's paths, then: source tools/dev-env.sh
+# Any value left unset falls back to the defaults in dev-env.sh.
+
+# The Kane's Wrath Mod SDK checkout (provides KanesWrathXMLFiles and the xsd schema tree):
+# KW_SDK="$HOME/kw-mod-sdk"
+
+# Compiler data root — the SDK asset XML tree:
+# KW_DATAROOT="$KW_SDK/KanesWrathXMLFiles"
+
+# Directory CONTAINING kw/xsd/CnC3Types.xsd. Only needed if the repo's schemas/ is absent (fresh clone):
+# dev-env.sh will symlink schemas/ -> here.
+# KW_SCHEMA_SRC="$KW_SDK/schemas"
+
+# RefPack-decompressed base-stream manifests, for cross-stream reference resolution (-rm):
+# KW_BASEMANIFESTS="$HOME/kw-mod-sdk/base-manifests"

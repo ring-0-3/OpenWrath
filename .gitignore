@@ -393,3 +393,5 @@ MigrationBackup/
 # build output
 /Debug/
 /Release/
+# machine-specific dev paths (copy dev-env.local.example -> dev-env.local)
+/tools/dev-env.local
