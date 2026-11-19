@@ -29,3 +29,11 @@ The round-trip harness is the source of truth: a type "round-trips byte-exact" o
 recompiles to identical instance/relocation/import bytes. Some values are stored by the engine as one-way
 hashes (e.g. `StringHash`, module `id` tags) or as opaque binary blobs; where a value cannot be recovered
 losslessly it is documented, not silently approximated.
+
+## Built with AI assistance
+This toolchain was developed with AI assistance. That's stated plainly because the project values honesty.
+What matters more than how it was written is how it is *verified*: every change is reviewed, and correctness
+is demonstrated mechanically by the byte-exact round-trip test suite (`tools/roundtrip.sh`) — decompiled
+output must recompile to identical bytes — rather than taken on trust. The goals are reliable, understandable,
+non-bloated code and clear documentation that teaches the engine instead of gatekeeping it. Audits, scrutiny,
+and contributions are welcome.
