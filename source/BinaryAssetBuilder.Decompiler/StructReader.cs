@@ -281,12 +281,19 @@ namespace BinaryAssetBuilder.Decompiler
             }
         }
 
-        private void ReadString(Type charType, uint off, string name, XElement target, HashSet<string> attrSet)
+        private void ReadString(Type charType, uint off, string name, XElement target, HashSet<string> attrSet, bool emitEmpty = false)
         {
             string s = ReadStringValue(charType, off);
             if (s == null)
             {
-                return; // empty/absent
+                // Inline empty string = absent (null pointer), emit nothing. But a string reached through a
+                // NON-null pointer (emitEmpty) is an *allocated* empty string (e.g. DestinationPlayer="") that the
+                // binary carries as a relocation — it must emit ="" so the recompile reproduces that relocation.
+                if (!emitEmpty)
+                {
+                    return;
+                }
+                s = string.Empty;
             }
             // Some string fields are XSD child elements with text content, not attributes (e.g.
             // GameObject.DisplayName = <DisplayName>text</DisplayName>). If the schema declares the name as an
@@ -332,7 +339,7 @@ namespace BinaryAssetBuilder.Decompiler
                 Type gtd = elem.GetGenericTypeDefinition();
                 if (gtd == typeof(PolymorphicList<>)) { ReadPolymorphicList(elem.GetGenericArguments()[0], to, name, target); return; }
                 if (gtd == typeof(Relo.List<>)) { ReadList(elem.GetGenericArguments()[0], to, name, target, attrSet); return; }
-                if (gtd == typeof(String<>)) { ReadString(elem.GetGenericArguments()[0], to, name, target, attrSet); return; }
+                if (gtd == typeof(String<>)) { ReadString(elem.GetGenericArguments()[0], to, name, target, attrSet, emitEmpty: true); return; }
                 // Pointer to a single reference/id wrapper (e.g. WeaponTemplate.FireSound*) -> attribute at the
                 // followed offset, where the import index / id hash lives.
                 if (gtd == typeof(AssetReference<>) || gtd == typeof(AssetReference<,>)) { EmitReference(target, attrSet, name, to, refs); return; }
