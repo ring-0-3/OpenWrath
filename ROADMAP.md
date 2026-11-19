@@ -30,8 +30,16 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 
 ## Verification & reliability
 - ✅ `tools/roundtrip.sh` — decompile → recompile → assert byte-identical, per asset, manifest-driven.
-- ✅ Verified byte-exact: ArmorTemplate 207/207, LocomotorTemplate 79/79, AttributeModifier 78/78,
-  WeaponTemplate 456/456, GameObjects incl. `GDIConstructionYard`.
+- ✅ Verified byte-exact (round-trip): ArmorTemplate 207/207, WeaponTemplate 456/456, LocomotorTemplate 79/79,
+  AttributeModifier 78/78, UpgradeTemplate 186/186, SpecialPowerTemplate 258/258, ObjectCreationList 267/267,
+  GameObjects incl. `GDIConstructionYard`.
+- 🔧 **Ground-truth validation — compiler output vs EA's *shipped* bytes (the "does it actually run" check).**
+  Round-trip proves the toolchain is internally *lossless*; this proves the output is *what the game actually
+  loads* — i.e. it compiles to valid, non-crashing assets. Method: diff our compiled output against the real
+  bytes in the game's shipped streams (not just decompile→recompile). Done for the foundational types + the core
+  engine, and confirmed end-to-end by mods that run in-game — but **extend the diff across all covered types** so
+  every "byte-exact round-trip" is backed by "byte-matches-what-ships." This is the measure that most directly
+  means *it runs in the game*, which is the thing that ultimately matters.
 - 🔧 **Whole-corpus coverage** — `tools/corpus-roundtrip.sh` + `docs/reference/COVERAGE.md` publish a *measured*
   per-type matrix (currently **99.3% byte-exact across the 5 core gameplay types**; see the file for honest scope).
   **Next:** compile source with include-context so the broader type space (FX, Upgrade, CommandSet, LogicCommand,
