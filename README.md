@@ -1,6 +1,6 @@
 # OpenWrath
 
-A **native-Linux, open modding toolchain for Command & Conquer: Kane's Wrath** (the SAGE engine) — a
+A **native-Linux, open modding toolchain for Command & Conquer 3: Kane's Wrath** (the SAGE engine) — a
 byte-faithful asset **compiler** and a lossless **decompiler**, plus the stream/archive utilities needed to
 build a mod end to end. No Wine, no Windows VM.
 
