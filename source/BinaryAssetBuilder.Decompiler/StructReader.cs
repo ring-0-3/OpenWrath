@@ -572,7 +572,16 @@ namespace BinaryAssetBuilder.Decompiler
                 : u == typeof(uint) ? BitConverter.ToUInt32(_asset.Instance, (int)off)
                 : BitConverter.ToInt32(_asset.Instance, (int)off);
             string n = Enum.GetName(enumType, Enum.ToObject(enumType, value));
-            return n ?? value.ToString(CultureInfo.InvariantCulture);
+            if (n == null)
+            {
+                return value.ToString(CultureInfo.InvariantCulture);
+            }
+            // SAGE enums whose authored/XSD name is not a valid C# identifier (e.g. "1", "2") use a placeholder
+            // member name carrying the real name in a [Display(Name="...")] attribute — the same convention the
+            // compiler's enum marshaler reads. Emit the Display name so the XSD enumeration accepts it.
+            var display = enumType.GetField(n)
+                ?.GetCustomAttribute<System.ComponentModel.DataAnnotations.DisplayAttribute>();
+            return display?.Name ?? n;
         }
 
         private static string RenderFloat(float v)
