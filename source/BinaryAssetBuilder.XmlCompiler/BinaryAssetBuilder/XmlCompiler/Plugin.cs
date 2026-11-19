@@ -142,6 +142,13 @@ public class Plugin : IAssetBuilderPlugin
             0x6D59C409u,
 #endif
             false),
+            // Additional gameplay types (KW TypeHashes, from the KW type table). These have complete
+            // SageBinaryData structs + marshalers; registering them unblocks compiling the GlobalData source
+            // files that define/reference them. TW TypeHashes are not available here — KW is the build target.
+            (typeof(UpgradeTemplate), 0x1E53F384u, false),
+            (typeof(SpecialPowerTemplate), 0x5EF0ACA9u, false),
+            (typeof(ObjectCreationList), 0x683D4DE5u, false),
+            (typeof(FXList), 0xEBE8A8A4u, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
