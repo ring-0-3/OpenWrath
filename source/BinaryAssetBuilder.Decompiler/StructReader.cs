@@ -61,6 +61,55 @@ namespace BinaryAssetBuilder.Decompiler
                 foreach (RefAttr r in refs) r.Attribute.Remove();
                 foreach (RefAttr r in refs.OrderBy(r => r.Index)) target.Add(r.Attribute);
             }
+            ReorderChildElementsToSchema(t, target);
+        }
+
+        // The walker emits child elements in struct-field (binary layout) order, which for most types already
+        // matches the XSD sequence. A few types (e.g. Mouse, MultiplayerSettings) declare their elements in a
+        // different sequence than the struct lays them out; the compiler validates children against the XSD
+        // sequence and would reject the struct-order XML. Reorder known elements into XSD-sequence order. Because
+        // the XSD sequence is exactly the order the original source XML had (and the order the compiler assigns
+        // import indices in), this is byte-faithful: for types whose struct order already matches, it's a no-op.
+        // Elements not named in the schema sequence keep their original slots.
+        private void ReorderChildElementsToSchema(Type t, XElement target)
+        {
+            System.Collections.Generic.List<string> order = _schema?.GetOrderedElementNames(t.Name);
+            if (order == null || order.Count == 0)
+            {
+                return;
+            }
+            var rank = new System.Collections.Generic.Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < order.Count; i++)
+            {
+                if (!rank.ContainsKey(order[i])) rank[order[i]] = i;
+            }
+            var elems = target.Elements().ToList();
+            if (elems.Count < 2)
+            {
+                return;
+            }
+            var known = elems.Where(e => rank.ContainsKey(e.Name.LocalName)).ToList();
+            if (known.Count < 2)
+            {
+                return;
+            }
+            // Stable sort of the known elements by XSD rank (repeated names keep their relative order).
+            var sortedKnown = known.OrderBy(e => rank[e.Name.LocalName]).ToList();
+            bool changed = false;
+            for (int i = 0; i < known.Count; i++)
+            {
+                if (!ReferenceEquals(known[i], sortedKnown[i])) { changed = true; break; }
+            }
+            if (!changed)
+            {
+                return;
+            }
+            foreach (XElement e in elems) e.Remove();
+            int ki = 0;
+            foreach (XElement e in elems)
+            {
+                target.Add(rank.ContainsKey(e.Name.LocalName) ? sortedKnown[ki++] : e);
+            }
         }
 
         private void ReadStructInto(Type t, uint baseOff, XElement target, System.Collections.Generic.List<RefAttr> refs)

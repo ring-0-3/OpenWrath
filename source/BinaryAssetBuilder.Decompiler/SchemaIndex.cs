@@ -233,6 +233,52 @@ namespace BinaryAssetBuilder.Decompiler
             }
         }
 
+        private readonly Dictionary<string, List<string>> _orderedElems = new(StringComparer.Ordinal);
+
+        // Child-element local-names for a complex type in XSD SEQUENCE order (base sequence first, then this
+        // type's own elements — the semantics of xs:extension, which appends the derived sequence after the
+        // base's). The compiler validates children against this sequence and assigns import indices in document
+        // order, so the original source XML the binary was built from had its elements in exactly this order;
+        // emitting in this order is both necessary to validate and byte-faithful. null if schema unavailable /
+        // type unknown.
+        public List<string> GetOrderedElementNames(string typeName)
+        {
+            if (!_available || typeName == null)
+            {
+                return null;
+            }
+            if (_orderedElems.TryGetValue(typeName, out List<string> cached))
+            {
+                return cached;
+            }
+            if (!_complexTypes.ContainsKey(typeName))
+            {
+                _orderedElems[typeName] = null;
+                return null;
+            }
+            var ordered = new List<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            CollectOrderedElements(typeName, ordered, seen, new HashSet<string>(StringComparer.Ordinal));
+            _orderedElems[typeName] = ordered;
+            return ordered;
+        }
+
+        private void CollectOrderedElements(string typeName, List<string> into, HashSet<string> seen, HashSet<string> visiting)
+        {
+            if (typeName == null || !visiting.Add(typeName))
+            {
+                return;
+            }
+            if (_complexTypes.TryGetValue(typeName, out ComplexType ct))
+            {
+                if (ct.BaseType != null) CollectOrderedElements(ct.BaseType, into, seen, visiting);
+                foreach (string el in ct.OwnElements)
+                {
+                    if (seen.Add(el)) into.Add(el);
+                }
+            }
+        }
+
         private void Collect(string typeName, HashSet<string> into, HashSet<string> visiting)
         {
             if (typeName == null || !visiting.Add(typeName))
