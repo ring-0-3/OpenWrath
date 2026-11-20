@@ -169,6 +169,7 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(StaticGameLOD), 0x352AA045u, false),
             (typeof(DynamicGameLOD), 0xA2EDC094u, false),
             (typeof(GameLODPreset), 0xD09C0652u, false),
+            (typeof(CrowdResponse), 0x0CF7A495u, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
