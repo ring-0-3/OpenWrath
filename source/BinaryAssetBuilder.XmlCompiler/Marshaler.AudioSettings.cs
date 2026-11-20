@@ -47,13 +47,16 @@ public static partial class Marshaler
         Marshal(node.GetAttributeValue(nameof(AudioSettings.MaxRequestsPerStream), "4"), &objT->MaxRequestsPerStream, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.ForceResetTime), "0s"), &objT->ForceResetTime, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.EmergencyResetTime), "0s"), &objT->EmergencyResetTime, state);
-        Marshal(node.GetAttributeValue(nameof(AudioSettings.SuppressOcclusion), "false"), &objT->SuppressOcclusion, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.MinOcclusion), "0"), &objT->MinOcclusion, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.DelayPriorToPlayingToReadSoundFile), "1s"), &objT->DelayPriorToPlayingToReadSoundFile, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.ReadAheadTime), "3s"), &objT->ReadAheadTime, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.QueueAheadTime), ".5s"), &objT->QueueAheadTime, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.LongTime), "60s"), &objT->LongTime, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.AudioFootprintInBytes), "4194304"), &objT->AudioFootprintInBytes, state);
+        Marshal(node.GetAttributeValue(nameof(AudioSettings.DontLoadThirdVariationWhenFileReadQueueIsLongerThan), "50"), &objT->DontLoadThirdVariationWhenFileReadQueueIsLongerThan, state);
+        Marshal(node.GetAttributeValue(nameof(AudioSettings.DontLoadSecondVariationWhenFileReadQueueIsLongerThan), "100"), &objT->DontLoadSecondVariationWhenFileReadQueueIsLongerThan, state);
+        Marshal(node.GetAttributeValue(nameof(AudioSettings.DontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan), "100"), &objT->DontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan, state);
+        Marshal(node.GetAttributeValue(nameof(AudioSettings.WhatIsLowPriorityForDontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan), "LOW"), &objT->WhatIsLowPriorityForDontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.DefaultSoundVolume), "100"), &objT->DefaultSoundVolume, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.DefaultVoiceVolume), "100"), &objT->DefaultVoiceVolume, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.DefaultMusicVolume), "100"), &objT->DefaultMusicVolume, state);
@@ -68,6 +71,7 @@ public static partial class Marshaler
         Marshal(node.GetAttributeValue(nameof(AudioSettings.TimeToFadeAudio), "1s"), &objT->TimeToFadeAudio, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.AmbientStreamHysteresisVolume), "5"), &objT->AmbientStreamHysteresisVolume, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.VolumeMultiplierFor2DSounds), "100%"), &objT->VolumeMultiplierFor2DSounds, state);
+        Marshal(node.GetAttributeValue(nameof(AudioSettings.VolumeMultiplierFor3DSounds), "100%"), &objT->VolumeMultiplierFor3DSounds, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.VoiceMoveToCampMaxCampnessAtStartPoint), "0"), &objT->VoiceMoveToCampMaxCampnessAtStartPoint, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.VoiceMoveToCampMinCampnessAtEndPoint), "5"), &objT->VoiceMoveToCampMinCampnessAtEndPoint, state);
         Marshal(node.GetAttributeValue(nameof(AudioSettings.MinDelayBetweenEnterStateVoice), "5s"), &objT->MinDelayBetweenEnterStateVoice, state);

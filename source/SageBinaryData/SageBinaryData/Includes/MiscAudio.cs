@@ -13,7 +13,7 @@ namespace SageBinaryData
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> RadarNotifyOnlineSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> RadarNotifyOfflineSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GenericRadarEvent;
-        public AssetReference<BaseAudioEventInfo, AudioEventInfo> BeaconPlacementSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> BeaconPlacedSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> BeaconPlacementFailed;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> DefectorTimerTickSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> DefectorTimerDingSound;
@@ -73,7 +73,7 @@ namespace SageBinaryData
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> AircraftWheelScreech;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> LockonTickSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> TargetObjectWithSpecialPowerSound;
-        public AssetReference<BaseAudioEventInfo, AudioEventInfo> ObjectiveCompleteSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> ObjectiveCompletedSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiFixedButtonClickedSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiBuildQueueButtonClickedSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiSelectionRefinementButtonClickedSound;
@@ -92,5 +92,11 @@ namespace SageBinaryData
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiYesNoDialogButtonClickedSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiYesNoDialogButtonMouseOverSound;
         public AssetReference<BaseAudioEventInfo, AudioEventInfo> GuiYesNoDialogButtonMouseOutSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> AutoResolveSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> AutoResolveWinSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> AutoResolveLoseSound;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> MetaGameAutoResolveMusic;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> MetaGameAutoResolveWinMusic;
+        public AssetReference<BaseAudioEventInfo, AudioEventInfo> MetaGameAutoResolveLoseMusic;
     }
 }

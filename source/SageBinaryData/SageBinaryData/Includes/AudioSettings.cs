@@ -44,6 +44,10 @@ namespace SageBinaryData
         public Time QueueAheadTime;
         public Time LongTime;
         public uint AudioFootprintInBytes;
+        public uint DontLoadThirdVariationWhenFileReadQueueIsLongerThan;
+        public uint DontLoadSecondVariationWhenFileReadQueueIsLongerThan;
+        public uint DontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan;
+        public AudioPriority WhatIsLowPriorityForDontLoadForLowPrioritySoundsWhenFileReadQueueIsLongerThan;
         public Percentage DefaultSoundVolume;
         public Percentage DefaultVoiceVolume;
         public Percentage DefaultMusicVolume;
@@ -58,6 +62,7 @@ namespace SageBinaryData
         public Time TimeToFadeAudio;
         public int AmbientStreamHysteresisVolume;
         public Percentage VolumeMultiplierFor2DSounds;
+        public Percentage VolumeMultiplierFor3DSounds;
         public uint VoiceMoveToCampMaxCampnessAtStartPoint;
         public uint VoiceMoveToCampMinCampnessAtEndPoint;
         public Time MinDelayBetweenEnterStateVoice;
@@ -72,6 +77,5 @@ namespace SageBinaryData
         public MicrophoneSettings ShellMicSettings;
         public VolumeCompressionSettings VolumeCompressorSettings;
         public SageBool PlayEnemySightedEventsOnlyFromNearbyUnits;
-        public SageBool SuppressOcclusion;
     }
 }
