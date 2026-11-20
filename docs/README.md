@@ -6,7 +6,7 @@ genuinely different needs:
 
 - **Understanding OpenWrath** (below) — the concept path. Start here. Read top to bottom to build a mental
   model of how Kane's Wrath stores its data and how OpenWrath takes it apart and puts it back together. No
-  prior modding or reverse-engineering knowledge assumed.
+  prior modding experience assumed.
 - **Tutorials** *(coming)* — hands-on, learn-by-doing walkthroughs ("build your first mod").
 - **How-to guides** *(coming)* — short task recipes ("change a unit's armor", "repack a `.big`").
 - **Reference** *(coming)* — the exact spec: file formats, byte layouts, every flag.

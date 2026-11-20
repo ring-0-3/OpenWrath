@@ -19,20 +19,24 @@ tools. It does not replace them; it drives them.
 ## Quickstart
 
 ```sh
-modkit/openwrath detect     # auto-discover your KW install / prefix / mods / SDK; writes the config
-modkit/openwrath show       # print the resolved config and flag anything missing or moved
+modkit/openwrath detect              # auto-discover your KW install / prefix / mods / SDK; writes the config
+modkit/openwrath show                # print the resolved config and flag anything missing or moved
+modkit/openwrath mod bake <project>  # compile a mod's overrides + splice them into its target stream + install
+modkit/openwrath mod revert <target> # restore a target's big from the last openwrath backup
 ```
 
 `detect` finds your Steam (Flatpak or native), the KW install + Proton prefix (even on other
 drives — it reads `libraryfolders.vdf`), your Mods folder, and the active launcher SkuDef.
-Bring-your-own paths (your SDK, the master StringHashes table) are yours to point it at.
+Bring-your-own paths (your SDK, the master StringHashes table) are yours to point it at. A *mod*
+is bring-your-own: the modkit is the capability and bundles no mod content or game data.
 
 See `config.example.toml` for the full schema.
 
 ## Status / roadmap
 
 - [x] `detect` / `show` — environment discovery + config
-- [ ] `bake` — compile a mod's XML overrides and splice them into a target stream (base game or
+- [x] `mod bake` — compile a mod's XML overrides and splice them into a target stream (base game or
       an existing mod), repack the big, auto-backup, install. Wraps the whole hand-run pipeline.
+- [x] `mod revert` — restore a target's big from the last openwrath backup.
 - [ ] `trace` — walk a unit → weapons → projectiles → effects so you know *what asset to mod*.
 - [ ] `stringhashes` — (re)generate the master StringHashes table from your own SDK.

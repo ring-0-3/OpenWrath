@@ -63,9 +63,9 @@ memory image you load and fix up, not a document you parse field-by-field.
 
 ## Why this matters for modding
 
-Second Isomer — a complete overhaul mod — ships its entire contents as **one stream**, `static_mod`, holding
-roughly **44,000 assets** packed contiguously, with all their relocations and imports. That packing is the
-reason modding a stream isn't "open file, edit line, save":
+A complete overhaul mod can ship its entire contents as **one stream** — tens of thousands of assets packed
+contiguously, with all their relocations and imports. That packing is the reason modding a stream isn't "open
+file, edit line, save":
 
 - You can't just resize one asset's bytes in place. Everything after it would shift, and every offset in the
   manifest and relocation tables would silently become wrong.

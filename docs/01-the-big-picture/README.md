@@ -33,14 +33,14 @@ OpenWrath is the bridge across that gap, both ways, plus the tooling to get at t
 ### 1. The compiler — `BinaryAssetBuilder`  (XML → binary)
 
 Give it an XML asset definition (say, a tank: its health, weapons, armor, behavior); it produces the exact
-compiled bytes the engine loads. Its defining property is that it is **byte-faithful to EA's own compiler** —
-what it emits is indistinguishable from what the game shipped. It's how your *edits* become something the game
-can actually run.
+compiled bytes the engine loads. Its defining property is that it is designed to be **byte-faithful to EA's own
+compiler** — reproducing the shipped bytes exactly, which the project *measures* type by type rather than
+assuming (see the coverage matrix). It's how your *edits* become something the game can actually run.
 
 ### 2. The decompiler — `bab-decompile`  (binary → XML)
 
 The inverse. Give it compiled game data; it reconstructs the readable XML. This is how you **open up** content
-you have no source for — including mods like Second Isomer. Crucially it's **lossless**: because it reuses the
+you have no source for — the base game, or a third-party mod. Crucially it's **lossless**: because it reuses the
 exact same internal data layout as the compiler, its XML is designed to recompile to *identical* bytes. (More
 on why that's possible, and why it's hard, in later chapters.)
 

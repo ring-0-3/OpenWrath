@@ -19,8 +19,8 @@ serialization engine.
   This is verified by `tools/roundtrip.sh` (decompile → recompile → assert identical bytes).
 
 ## No EA game content is shipped by us
-This toolchain contains **no** Command & Conquer / Kane's Wrath game assets. It is reverse-engineering
-*interop* software for a file format. Reproducing a mod requires that you supply your own legally-owned game
+This toolchain contains **no** Command & Conquer / Kane's Wrath game assets. It is **interoperability** software
+for a data file format. Reproducing a mod requires that you supply your own legally-owned game
 data and SDK. (Any SDK XML / schema files present in the tree are inherited from upstream history, not added
 by this fork; the eventual public release excludes them in favour of a bring-your-own-data setup.)
 
