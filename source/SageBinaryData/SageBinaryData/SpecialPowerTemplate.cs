@@ -44,6 +44,16 @@ namespace SageBinaryData
         public unsafe fixed uint Value[NumSpans];
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MetaGamePhaseBitflags
+    {
+      public const int Count = 5;   // MetagamePhaseEnum: OPERATIONS/RESOLVE_POWERS/MOVEMENT/BATTLE/UPKEEP
+      public const int BitsInSpan = 32;
+      public const int NumSpans = (Count + (BitsInSpan - 1)) / BitsInSpan;
+
+      public unsafe fixed uint Value[NumSpans];
+    }
+
     public enum SpecialPowerTemplateTargetType
     {
         LOCATION,
@@ -98,6 +108,11 @@ namespace SageBinaryData
         public int Money;
         public AssetReference<PackedTextureImage> TimerImage;
         public float ReachableTargetsCircleDisplayRadius;
+        public MetagameOperationsEnums MetaGameOperation;
+        public MetaGamePhaseBitflags ActiveMetaGamePhases;
+        public ObjectStatusBitFlags StrikeForceRejectStatus;
+        public SageBool StrikeForceRejectMatchAll;
+        public MetaGameDependenciesType MetaGameDependencies;
         public ObjectFilter ObjectFilter;
         public ObjectFilter ForbiddenObjectFilter;
         public unsafe GameDependencyType* GameDependency;
