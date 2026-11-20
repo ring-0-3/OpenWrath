@@ -171,6 +171,7 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(GameLODPreset), 0xD09C0652u, false),
             (typeof(CrowdResponse), 0x0CF7A495u, false),
             (typeof(VideoEventList), 0x18A04ECCu, false),
+            (typeof(SageBinaryData.Environment), 0x64ED86BAu, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
