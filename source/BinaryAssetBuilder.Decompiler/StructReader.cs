@@ -62,6 +62,36 @@ namespace BinaryAssetBuilder.Decompiler
                 foreach (RefAttr r in refs.OrderBy(r => r.Index)) target.Add(r.Attribute);
             }
             ReorderChildElementsToSchema(t, target);
+            EmitIdIfRequired(t, target);
+        }
+
+        // Nested structs that extend BaseAssetType (e.g. MicrophoneSettings inside AudioSettings) require the XSD
+        // 'id' attribute even as child elements. The id is validation-only: BaseAssetType marshals to nothing, so
+        // the 4-byte Base slot stays 0 and any id value is byte-identical. The binary does not store the authored
+        // id, so emit the element's own name (matching EA's authoring, e.g. <TacticalMicSettings id="TacticalMic..">
+        // ). The top-level asset element already has its id set (from the instance name) before the walk, so the
+        // null-check skips it; value structs (Color3f, Coord2D, ...) have no BaseAssetType field and are skipped.
+        private void EmitIdIfRequired(Type t, XElement target)
+        {
+            if (target.Attribute("id") != null)
+            {
+                return;
+            }
+            TypeLayout.FieldLayout[] fields = TypeLayout.Get(t).Fields;
+            if (fields == null || fields.Length == 0)
+            {
+                return;
+            }
+            FieldInfo f0 = fields[0].Field;
+            if (f0 == null || f0.Name != "Base" || f0.FieldType != typeof(SageBinaryData.BaseAssetType))
+            {
+                return;
+            }
+            HashSet<string> attrSet = _schema?.GetDeclaredAttributeNames(t.Name);
+            if (attrSet != null && attrSet.Contains("id"))
+            {
+                target.SetAttributeValue("id", target.Name.LocalName);
+            }
         }
 
         // The walker emits child elements in struct-field (binary layout) order, which for most types already
@@ -222,7 +252,20 @@ namespace BinaryAssetBuilder.Decompiler
                 }
                 if (gtd == typeof(AssetReference<>) || gtd == typeof(AssetReference<,>))
                 {
-                    EmitReference(target, attrSet, name, off, refs);
+                    // Reference-wrapper structs (AudioFileRefWithWeight, MultisoundSubsoundRef) hold the asset
+                    // reference in their first field, named "Base". The compiler marshals the element node itself
+                    // as that AssetReference (reading node text, e.g. Marshaler.Audio.cs casts the node to
+                    // AssetReference<AudioFile>*), with sibling fields (Weight) as attributes. So the reference
+                    // must be emitted as the element's text content, not an attribute named "Base" (which the XSD
+                    // does not declare and SetAttr would drop — losing the import on recompile).
+                    if (name == "Base")
+                    {
+                        EmitReferenceAsText(target, off);
+                    }
+                    else
+                    {
+                        EmitReference(target, attrSet, name, off, refs);
+                    }
                     return;
                 }
                 if (gtd == typeof(TypedAssetId<>))
@@ -774,6 +817,19 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 refs.Add(new RefAttr(attr, index));
             }
+        }
+
+        // Emit an AssetReference as the element's TEXT content (the reference-wrapper pattern — see the "Base"
+        // field handling in ReadField). On recompile the reference-resolution pass reads the element node's value,
+        // records the import, and rewrites it to "name\index", so the import buffer is reproduced byte-exact.
+        private void EmitReferenceAsText(XElement target, uint slotOff)
+        {
+            if (!_asset.ImportFroms.Contains(slotOff))
+            {
+                return; // reference not set -> no text
+            }
+            uint index = _asset.ReadSlot(slotOff);
+            target.Add(new XText(RenderReferenceName(index)));
         }
 
         private string RenderReferenceName(uint index)
