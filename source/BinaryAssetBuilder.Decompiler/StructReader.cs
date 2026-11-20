@@ -392,7 +392,12 @@ namespace BinaryAssetBuilder.Decompiler
             if (elem.IsGenericType)
             {
                 Type gtd = elem.GetGenericTypeDefinition();
-                if (gtd == typeof(PolymorphicList<>)) { ReadPolymorphicList(elem.GetGenericArguments()[0], to, name, target); return; }
+                // A pointer to a PolymorphicList reached here is itself a relocation (past the null guard above),
+                // so EA allocated the list header. An EMPTY allocated list ({Count=0, Items=null}) must still emit
+                // its wrapper element so the recompile re-allocates the 8-byte header and reproduces the field
+                // relocation (same allocated-empty rule as the pointer-to-String path); a non-empty list emits its
+                // items as usual.
+                if (gtd == typeof(PolymorphicList<>)) { ReadPolymorphicList(elem.GetGenericArguments()[0], to, name, target, emitEmpty: true); return; }
                 if (gtd == typeof(Relo.List<>)) { ReadList(elem.GetGenericArguments()[0], to, name, target, attrSet); return; }
                 if (gtd == typeof(String<>)) { ReadString(elem.GetGenericArguments()[0], to, name, target, attrSet, emitEmpty: true); return; }
                 // Pointer to a single reference/id wrapper (e.g. WeaponTemplate.FireSound*) -> attribute at the
@@ -434,13 +439,17 @@ namespace BinaryAssetBuilder.Decompiler
         // PolymorphicList<T> at `listOff` = {uint Count; ptr ItemsArray}. ItemsArray = Count 4-byte pointers,
         // each a relocation to a module item block whose offset 0 = the module's TypeId hash. Emits one wrapper
         // element (field name) containing a child element per module (name resolved from the type). Empty => none.
-        private void ReadPolymorphicList(Type baseElem, uint listOff, string name, XElement target)
+        private void ReadPolymorphicList(Type baseElem, uint listOff, string name, XElement target, bool emitEmpty = false)
         {
             uint count = _asset.ReadSlot(listOff);
             uint arrOff = _asset.ReadSlot(listOff + 4);
             if (count == 0 || !_asset.ReloFroms.Contains(listOff + 4))
             {
-                return; // empty list -> emit nothing
+                if (emitEmpty)
+                {
+                    target.Add(new XElement(_ns + name)); // allocated-empty list -> emit the wrapper (no items)
+                }
+                return; // empty list
             }
             _asset.CheckRange(arrOff, (long)count * 4, "polylist<" + baseElem.Name + ">");
             _ = baseElem;
