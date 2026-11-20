@@ -125,6 +125,7 @@ public static partial class Marshaler
         Marshal(node.GetAttributeValue(nameof(W3DScriptedModelDrawModuleData.AffectedByStealth), "true"), &objT->AffectedByStealth, state);
         Marshal(node.GetAttributeValue(nameof(W3DScriptedModelDrawModuleData.InvertStealthOpacity), null), &objT->InvertStealthOpacity, state);
         Marshal(node.GetAttributeValue(nameof(W3DScriptedModelDrawModuleData.HighDetailOnly), null), &objT->HighDetailOnly, state);
+        Marshal(node.GetAttributeValue(nameof(W3DScriptedModelDrawModuleData.SetAnimsToLastFrameOnConstructionComplete), "true"), &objT->SetAnimsToLastFrameOnConstructionComplete, state);
         Marshal(node.GetChildNodes(nameof(W3DScriptedModelDrawModuleData.ModelConditionState)), &objT->ModelConditionState, state);
         Marshal(node.GetChildNodes(nameof(W3DScriptedModelDrawModuleData.AnimationState)), &objT->AnimationState, state);
         Marshal(node.GetChildNodes(nameof(W3DScriptedModelDrawModuleData.TimeOfDayTexture)), &objT->TimeOfDayTexture, state);

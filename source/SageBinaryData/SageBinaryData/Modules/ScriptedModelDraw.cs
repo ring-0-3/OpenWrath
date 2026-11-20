@@ -114,5 +114,6 @@ namespace SageBinaryData
         public SageBool AffectedByStealth;
         public SageBool InvertStealthOpacity;
         public SageBool HighDetailOnly;
+        public SageBool SetAnimsToLastFrameOnConstructionComplete;
     }
 }
