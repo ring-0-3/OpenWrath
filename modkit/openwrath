@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""openwrath — developer modding CLI for the OpenWrath / Kane's Wrath toolchain.
+
+A thin, config-driven orchestration layer over the OpenWrath compiler/decompiler and the
+stream-surgery tools, so modding doesn't require tribal knowledge of where everything lives.
+
+Design rules (hard):
+  * NO path to any specific machine is baked into this code. Everything a user's setup
+    needs is discovered at runtime (`detect`) or read from a per-user config. The only
+    literals here are facts about the GAME (Steam appid, install folder name) — never a
+    personal path.
+  * Ships ZERO game data. It operates on the user's own install / SDK, which they own.
+  * Config lives at $XDG_CONFIG_HOME/openwrath/config.toml (per-user, outside any repo),
+    so there is nothing to gitignore and no path ever lands in version control.
+
+Subcommands:
+  detect   auto-discover this machine's KW install / prefix / mods / SDK and write the config
+  show     print the resolved config and flag anything missing
+  (bake, trace — coming next)
+"""
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+
+# --- Game facts (NOT user paths; constants about Kane's Wrath itself) --------------------
+APPID = "24810"
+GAME_DIR_NAME = "Command and Conquer 3 - Kane's Wrath"   # steamapps/common/<this>
+WINE_DOCS_NAME = "Command & Conquer 3 Kane's Wrath"       # drive_c/.../Documents/<this>
+SKUDEF_GLOB = "CNC3EP1_english_*.SkuDef"                  # the launcher picks the highest version
+
+CONFIG_PATH = (
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    / "openwrath" / "config.toml"
+)
+
+# Keys we resolve, with a human description. Discovered keys are auto-filled by `detect`;
+# "byo" (bring-your-own) keys are things only the user can point us at (their SDK, etc.).
+SCHEMA = [
+    ("steam_root",     "auto", "Steam root (Flatpak / native)"),
+    ("game_install",   "auto", "KW install dir (holds CNC3EP1.exe + the master SkuDef)"),
+    ("prefix",         "auto", "Proton/Wine prefix for KW"),
+    ("mods_dir",       "auto", "Where mods are installed (Wine Documents/.../Mods)"),
+    ("install_skudef", "auto", "Active master SkuDef the launcher reads"),
+    ("openwrath",      "auto", "OpenWrath toolchain dir (this repo; holds Debug/)"),
+    ("sdk",            "byo",  "Kane's Wrath XML SDK (KanesWrathXMLFiles) — you provide"),
+    ("base_manifests", "byo",  "SDK 'Game Files/Manifest' dir (global/static manifests)"),
+    ("schema",         "byo",  "CnC3Types.xsd schema"),
+    ("stringhashes",   "byo",  "master StringHashes.xml (EA-derived; you generate/provide)"),
+]
+
+
+# --- tiny TOML writer (flat [paths] table of strings; avoids a write-dep) ----------------
+def write_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# openwrath config — per-user, auto-written by `openwrath detect`.",
+        "# Edit freely; re-run `openwrath detect` to re-discover the 'auto' paths.",
+        "",
+        "[paths]",
+    ]
+    for key, _, desc in SCHEMA:
+        val = cfg.get(key, "") or ""
+        lines.append(f'{key} = "{val}"' + (f"   # {desc}" if not val else ""))
+    CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    import tomllib
+    with open(CONFIG_PATH, "rb") as f:
+        return tomllib.load(f).get("paths", {})
+
+
+# --- Steam / prefix discovery ------------------------------------------------------------
+def steam_roots() -> list[Path]:
+    home = Path.home()
+    candidates = [
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
+        home / ".local/share/Steam",                                   # native
+        home / ".steam/steam",
+        home / ".steam/root",
+    ]
+    seen, out = set(), []
+    for c in candidates:
+        rp = c.resolve() if c.exists() else c
+        if c.exists() and rp not in seen:
+            seen.add(rp)
+            out.append(c)
+    return out
+
+
+def library_paths(steam_root: Path) -> list[Path]:
+    """Every Steam library folder (games may live on other drives), from libraryfolders.vdf."""
+    libs = [steam_root]
+    for vdf in (steam_root / "steamapps/libraryfolders.vdf",
+                steam_root / "config/libraryfolders.vdf"):
+        if vdf.exists():
+            for m in re.finditer(r'"path"\s*"([^"]+)"', vdf.read_text(errors="replace")):
+                p = Path(m.group(1))
+                if p not in libs:
+                    libs.append(p)
+    return libs
+
+
+def find_install_and_prefix() -> tuple[Path | None, Path | None, Path | None]:
+    """Return (steam_root, game_install, prefix) for appid 24810, or Nones."""
+    for root in steam_roots():
+        for lib in library_paths(root):
+            install = lib / "steamapps/common" / GAME_DIR_NAME
+            prefix = lib / "steamapps/compatdata" / APPID / "pfx"
+            if install.exists():
+                return root, install, (prefix if prefix.exists() else None)
+    return None, None, None
+
+
+def find_mods_dir(prefix: Path) -> Path | None:
+    docs = prefix / "drive_c/users/steamuser/Documents" / WINE_DOCS_NAME / "Mods"
+    return docs if docs.exists() else None
+
+
+def find_install_skudef(install: Path) -> Path | None:
+    """The launcher reads the highest-version english SkuDef; pick that one."""
+    skus = sorted(install.glob(SKUDEF_GLOB))
+    def ver(p: Path):
+        m = re.search(r"_(\d+)\.(\d+)\.SkuDef$", p.name)
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    return max(skus, key=ver) if skus else None
+
+
+def openwrath_dir() -> Path:
+    """This repo (the CLI lives in <repo>/modkit/openwrath)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def probe_byo(repo: Path) -> dict:
+    """Best-effort guesses for bring-your-own paths — only used to pre-fill; never required."""
+    home = Path.home()
+    out = {}
+    for sdk in (home / "cnc-kw-sdk/KanesWrathXMLFiles",):
+        if sdk.exists():
+            out["sdk"] = str(sdk)
+            mani = sdk.parent / "Game Files/Manifest"
+            if mani.exists():
+                out["base_manifests"] = str(mani)
+            break
+    sch = repo / "schemas/kw/xsd/CnC3Types.xsd"
+    if sch.exists():
+        out["schema"] = str(sch)
+    return out
+
+
+# --- commands ----------------------------------------------------------------------------
+def cmd_detect(_args) -> int:
+    print("openwrath detect — discovering your Kane's Wrath setup...\n")
+    cfg = read_config()  # keep any values the user already set
+    root, install, prefix = find_install_and_prefix()
+    repo = openwrath_dir()
+
+    found = dict(cfg)
+    if root:    found["steam_root"] = str(root)
+    if install: found["game_install"] = str(install)
+    if prefix:  found["prefix"] = str(prefix)
+    if prefix and (mods := find_mods_dir(prefix)): found["mods_dir"] = str(mods)
+    if install and (sku := find_install_skudef(install)): found["install_skudef"] = str(sku)
+    found["openwrath"] = str(repo)
+    for k, v in probe_byo(repo).items():
+        found.setdefault(k, v)
+
+    write_config(found)
+
+    missing = [k for k, kind, _ in SCHEMA if not found.get(k)]
+    for key, kind, desc in SCHEMA:
+        val = found.get(key, "")
+        mark = "ok " if val else ("-- " if kind == "byo" else "!! ")
+        print(f"  [{mark}] {key:15} {val or '(not found — ' + desc + ')'}")
+    print(f"\nconfig written -> {CONFIG_PATH}")
+    if missing:
+        byo = [k for k in missing if dict((s[0], s[1]) for s in SCHEMA)[k] == "byo"]
+        auto = [k for k in missing if k not in byo]
+        if auto:
+            print(f"\n  ⚠ could not auto-detect: {', '.join(auto)} — set them in the config above.")
+        if byo:
+            print(f"  → bring-your-own (point these at your own files): {', '.join(byo)}")
+    return 0
+
+
+def cmd_show(_args) -> int:
+    cfg = read_config()
+    if not cfg:
+        print(f"no config at {CONFIG_PATH} — run `openwrath detect` first.")
+        return 1
+    print(f"config: {CONFIG_PATH}\n")
+    for key, kind, desc in SCHEMA:
+        val = cfg.get(key, "")
+        exists = " " if not val else ("ok" if Path(val).exists() else "MISSING-ON-DISK")
+        print(f"  {key:15} [{exists:>15}]  {val}")
+    return 0
+
+
+# --- mod bake: compile overrides -> splice into a target stream -> repack -> install -------
+LIB = Path(__file__).resolve().parent / "lib"
+MANIFEST_V5_HDR = 48
+MANIFEST_ENTRY = 44
+
+
+def _need(cfg: dict, *keys) -> list[str]:
+    import tomllib  # noqa: F401  (ensures 3.11+)
+    vals = []
+    for k in keys:
+        v = cfg.get(k)
+        if not v or not Path(v).exists():
+            sys.exit(f"error: config '{k}' is unset or missing on disk — run `openwrath detect` "
+                     f"(or set it in {CONFIG_PATH}).")
+        vals.append(v)
+    return vals
+
+
+def parse_manifest(path: str) -> list[dict]:
+    """Parse a v5 linked-stream manifest into per-asset dicts (incl. qualified name)."""
+    import struct
+    b = Path(path).read_bytes()
+    h = struct.unpack_from("<11I", b, 4)
+    n, arsz, rmsz, ansz = h[2], h[7], h[8], h[9]
+    name_base = MANIFEST_V5_HDR + n * MANIFEST_ENTRY + arsz + rmsz
+    out = []
+    for i in range(n):
+        o = MANIFEST_V5_HDR + i * MANIFEST_ENTRY
+        tid, iid, th, ih = struct.unpack_from("<4I", b, o)
+        noff = struct.unpack_from("<i", b, o + 24)[0]
+        name = None
+        if noff >= 0:
+            p = name_base + noff
+            name = b[p:b.index(b"\x00", p)].decode("latin1", "replace")
+        out.append({"tid": tid, "iid": iid, "th": th, "ih": ih, "name": name})
+    return out
+
+
+def declared_overrides(source_xml: Path) -> list[str]:
+    """Instance ids the mod itself declares as top-level overrides (not inside <Includes>)."""
+    import xml.etree.ElementTree as ET
+    root = ET.parse(source_xml).getroot()
+    skip = {"Tags", "Includes"}
+    ids = []
+    for child in root:
+        tag = child.tag.split("}")[-1]
+        if tag in skip:
+            continue
+        cid = child.get("id")
+        if cid:
+            ids.append(cid)
+    return ids
+
+
+def _run(cmd: list[str], **kw):
+    import subprocess
+    env = dict(os.environ, DOTNET_ROLL_FORWARD="LatestMajor",
+               DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
+    return subprocess.run(cmd, env=env, **kw)
+
+
+def compile_source(cfg: dict, source: Path, outdir: Path) -> tuple[Path, Path]:
+    """Compile one override XML; return (stream_manifest, assets_dir)."""
+    import glob
+    bab = Path(cfg["openwrath"]) / "Debug/BinaryAssetBuilder.dll"
+    bm = Path(cfg["base_manifests"])
+    rm = f'{bm/"global_common_2.manifest"};{bm/"static_common_2.manifest"}'
+    outdir.mkdir(parents=True, exist_ok=True)
+    r = _run(["dotnet", str(bab), str(source), f'-dr:{cfg["sdk"]}', f'-data:{cfg["sdk"]}',
+              f"-od:{outdir}", f'-sp:{cfg["schema"]}', f'-bps:{bm/"static_common_2.manifest"}',
+              f"-rm:{rm}", "-ls:true", "-cpf:_mod", "-sc:false", "-bc:false"],
+             capture_output=True, text=True)
+    manifests = glob.glob(str(outdir / "*_mod.manifest"))
+    if not manifests:
+        sys.exit(f"error: compile produced no stream for {source.name}:\n{r.stdout[-800:]}")
+    mf = Path(manifests[0])
+    return mf, mf.with_suffix("") / "assets"
+
+
+def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
+                               stream_opt: str | None) -> tuple[Path, str]:
+    """Resolve the .big to patch and which linked stream inside it holds the override ids.
+
+    If mod.toml pins `stream`, use it (after confirming it carries the ids). Otherwise pick the
+    stream that contains ALL the override ids (and, among candidates, prefer that over a partial).
+    """
+    import subprocess, tempfile
+    if target.lower() == "base":
+        sys.exit("error: target='base' not supported yet — target an installed mod for now.")
+    big = Path(cfg["mods_dir"]) / target / "ada_1_Streams.big"
+    if not big.exists():
+        sys.exit(f"error: target mod big not found: {big}")
+
+    def iids_of(st: str) -> set[int]:
+        with tempfile.TemporaryDirectory() as td:
+            subprocess.run(["python3", str(LIB / "bigextract.py"), str(big), f"{st}.manifest", td],
+                           capture_output=True)
+            mp = Path(td) / f"{st}.manifest"
+            return {e["iid"] for e in parse_manifest(str(mp))} if mp.exists() else set()
+
+    if stream_opt:
+        if not override_iids <= iids_of(stream_opt):
+            sys.exit(f"error: stream '{stream_opt}' in {big.name} is missing some override ids.")
+        return big, stream_opt
+
+    listing = subprocess.run(["python3", str(LIB / "biglist.py"), str(big), "manifest"],
+                             capture_output=True, text=True).stdout
+    streams = sorted({re.search(r"data.(\w+)\.manifest", ln).group(1)
+                      for ln in listing.splitlines() if ".manifest" in ln and "cdata" not in ln})
+    partial = None
+    for st in streams:
+        got = iids_of(st)
+        if override_iids <= got:
+            return big, st                      # contains ALL ids -> definitive
+        if override_iids & got and partial is None:
+            partial = st
+    if partial:
+        return big, partial
+    sys.exit(f"error: none of {big.name}'s streams contain the override ids — is the target right?")
+
+
+def cmd_mod_bake(args) -> int:
+    import tomllib, tempfile, shutil, glob, subprocess
+    proj = Path(args.project).resolve()
+    toml = proj / "mod.toml"
+    if not toml.exists():
+        sys.exit(f"error: no mod.toml in {proj}")
+    spec = tomllib.loads(toml.read_text()).get("mod", {})
+    name = spec.get("name", proj.name)
+    target = spec.get("target") or sys.exit("error: mod.toml needs [mod] target = \"<ModName>\"")
+    sources = [proj / s for s in spec.get("sources", [])] or sys.exit("error: mod.toml needs sources")
+
+    cfg = read_config()
+    _need(cfg, "openwrath", "sdk", "base_manifests", "schema", "mods_dir")
+    print(f"baking '{name}' -> {target}\n")
+
+    work = Path(tempfile.mkdtemp(prefix="openwrath-bake-"))
+    try:
+        # 1. compile each source; collect the override assets it declares
+        to_splice = []  # (tid, iid, asset_file, manifest)
+        all_iids = set()
+        for src in sources:
+            want = set(declared_overrides(src))
+            print(f"  compiling {src.name} ({len(want)} overrides: {', '.join(sorted(want))})")
+            mf, assets = compile_source(cfg, src, work / src.stem)
+            for e in parse_manifest(str(mf)):
+                inst = (e["name"] or "").split(":", 1)[-1]
+                if inst in want:
+                    af = assets / f'{e["tid"]:08x}.{e["th"]:08x}.{e["iid"]:08x}.{e["ih"]:08x}.asset'
+                    if af.exists():
+                        to_splice.append((e["tid"], e["iid"], af, mf))
+                        all_iids.add(e["iid"])
+        if not to_splice:
+            sys.exit("error: none of the declared overrides compiled to an asset.")
+
+        # 2. resolve target big + the stream holding these ids
+        big, stream = find_target_big_and_stream(cfg, target, all_iids, spec.get("stream"))
+        print(f"  target: {big.name}  stream: {stream}  ({len(to_splice)} assets)")
+
+        # 3. extract that stream, splice each override into it (chained)
+        cur = work / "extract"
+        cur.mkdir()
+        subprocess.run(["python3", str(LIB / "bigextract.py"), str(big), f"{stream}.", str(cur)],
+                       capture_output=True)
+        for i, (tid, iid, af, mf) in enumerate(to_splice):
+            nxt = work / f"splice{i}"
+            r = subprocess.run(["python3", str(LIB / "splice_asset.py"), str(cur), str(af),
+                                str(mf), str(nxt), f"{tid:08x}", f"{iid:08x}"],
+                               capture_output=True, text=True)
+            if not (nxt / f"{stream}.manifest").exists():
+                sys.exit(f"error: splice failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
+            cur = nxt
+
+        # 4. repack a new big, back up the live one, install
+        newbig = work / "patched.big"
+        parts = " ".join(f'data\\{stream}.{ext}={cur}/{stream}.{ext}' for ext in
+                         ("manifest", "bin", "relo", "imp"))
+        subprocess.run(["python3", str(LIB / "big_replace.py"), str(big), str(newbig),
+                        *[f"data\\{stream}.{ext}={cur}/{stream}.{ext}"
+                          for ext in ("manifest", "bin", "relo", "imp")]], capture_output=True)
+        if not newbig.exists():
+            sys.exit("error: repack produced no big.")
+        backup = big.with_suffix(".big.openwrath-backup")
+        if not backup.exists():
+            shutil.copy2(big, backup)
+        shutil.copy2(newbig, big)
+        print(f"\n  ✓ baked. backup: {backup.name}")
+        print(f"  revert anytime: openwrath mod revert {target}")
+        return 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def cmd_mod_revert(args) -> int:
+    import shutil
+    cfg = read_config()
+    (mods,) = _need(cfg, "mods_dir")
+    big = Path(mods) / args.target / "ada_1_Streams.big"
+    backup = big.with_suffix(".big.openwrath-backup")
+    if not backup.exists():
+        sys.exit(f"error: no openwrath backup for {args.target} ({backup.name} missing).")
+    shutil.copy2(backup, big)
+    print(f"reverted {args.target} to the pre-bake backup.")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("detect", help="auto-discover KW install/prefix/mods/SDK + write config")
+    sub.add_parser("show", help="print the resolved config and flag missing paths")
+    mod = sub.add_parser("mod", help="build/manage mods").add_subparsers(dest="mcmd", required=True)
+    b = mod.add_parser("bake", help="compile a mod's overrides + splice them into its target stream")
+    b.add_argument("project", help="path to the mod project dir (contains mod.toml)")
+    b.set_defaults(func=cmd_mod_bake)
+    r = mod.add_parser("revert", help="restore a target mod's big from the last openwrath backup")
+    r.add_argument("target", help="target mod name (e.g. SecondIsomer)")
+    r.set_defaults(func=cmd_mod_revert)
+    args = ap.parse_args()
+    if args.cmd == "detect":
+        return cmd_detect(args)
+    if args.cmd == "show":
+        return cmd_show(args)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

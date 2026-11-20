@@ -1,0 +1,23 @@
+# openwrath config — EXAMPLE ONLY.
+#
+# Your real config lives at  ~/.config/openwrath/config.toml  and is written for you by
+# `openwrath detect`. You normally never touch it by hand — re-run detect to refresh.
+#
+# Every value below is a path on YOUR machine. openwrath hardcodes no paths and ships no
+# game data: the auto-detected paths come from your Steam/Proton install, and the
+# bring-your-own paths point at files you legally own.
+
+[paths]
+# --- auto-detected by `openwrath detect` (from your Steam / Proton layout) ---
+steam_root     = "/path/to/Steam"
+game_install   = "/path/to/steamapps/common/Command and Conquer 3 - Kane's Wrath"
+prefix         = "/path/to/steamapps/compatdata/24810/pfx"
+mods_dir       = "/path/to/pfx/drive_c/users/steamuser/Documents/Command & Conquer 3 Kane's Wrath/Mods"
+install_skudef = "/path/to/game_install/CNC3EP1_english_1.3.SkuDef"
+openwrath      = "/path/to/openwrath-toolchain"
+
+# --- bring-your-own (point these at your own legally-owned files) ---
+sdk            = "/path/to/KanesWrathXMLFiles"
+base_manifests = "/path/to/Game Files/Manifest"
+schema         = "/path/to/CnC3Types.xsd"
+stringhashes   = "/path/to/StringHashes.xml"   # generated from YOUR sdk; EA-derived, never shipped
