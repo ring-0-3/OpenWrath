@@ -28,8 +28,9 @@ crashing), but only the 37 below have full compile support, so only they can rou
 
 ## Status by type (sample-verified against shipped bytes)
 
-Headline: **of 37 registered types, 33 reproduce EA's shipped bytes byte-exact on the sampled instances**; 2
-more are structurally exact (identical size) with a residual value-diff; 1 has a compile gap; 1 has no instances
+Headline: **of 37 registered types, 33 reproduce EA's shipped bytes byte-exact on the sampled instances**, and
+**GameObject is now mostly byte-exact too** (~79% of a random sample) after closing its dominant draw-module
+value-diff; Environment is structurally exact with a residual value-diff; 1 has a compile gap; 1 has no instances
 in the sampled streams to measure here.
 
 ### Byte-exact vs EA shipped bytes — sample-verified (33)
@@ -76,15 +77,25 @@ Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXA
 > instance of the type is proven. It is strong positive evidence for the type's model, not a whole-corpus
 > guarantee. Widening each type to its full instance set is ongoing.
 
-### Structurally exact, residual value-diff (2)
+### Structurally exact, residual value-diff (1)
 
 Same serialized **size** as the shipped asset (the struct shape and field order are right), but some field
 *values* differ — the model is structurally complete and the gap is localized.
 
 | Type | Stream | Sampled | Bucket | First-diff offset | Note |
 |------|--------|---------|--------|-------------------|------|
-| GameObject | static_common | AlienAssimilator, GDIConstructionYard, NODConstructionYard, GDIBattleBase, GDIMARV | SIZEOK_VALDIFF | ~0x45b–0x46b | Correct size incl. construction yards and MARV variants; residual value-diff localized to the module/weapon-set region. Note: GameObject *is* byte-exact in **closed-loop** (e.g. `GDIConstructionYard` 1/1), i.e. our decompile→recompile is lossless; it is not yet byte-exact against **shipped** bytes. |
 | Environment | static_common | Environment | SIZEOK_VALDIFF | 0x40 | One unresolved cross-stream reference. |
+
+### GameObject — now mostly byte-exact vs shipped bytes
+
+GameObject was previously same-size-with-a-value-diff across the board. The dominant diff was a single shared
+draw-module field (`W3DScriptedModelDrawModuleData.SetAnimsToLastFrameOnConstructionComplete`, schema default
+`true`) that the compiler was writing as `0` into former alignment padding; modeling it (one struct field + one
+marshal line) closed it for *every* object that embeds a scripted/tank draw module. Post-fix, a 14-instance random
+sample across static_common is **11/14 (~79%) BYTEEXACT** — including all three MARV variants, the construction
+yards, GDIAAScout, NODAttackBike, AlienEradicatorHexapod, GDIMedicalBay. The residual ~21% carry a separate,
+smaller class of 4-byte hash/reference value-diffs (unresolved StringHash or source drift), tracked next. Closed
+loop remains lossless.
 
 ### Registered but with an open compile gap (1)
 
