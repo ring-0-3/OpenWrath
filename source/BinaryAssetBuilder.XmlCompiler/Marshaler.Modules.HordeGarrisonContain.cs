@@ -13,6 +13,7 @@ public static partial class Marshaler
         Marshal(node.GetChildNode(nameof(HordeGarrisonContainModuleData.EntryOffset), null), &objT->EntryOffset, state);
         Marshal(node.GetChildNode(nameof(HordeGarrisonContainModuleData.EntryPosition), null), &objT->EntryPosition, state);
         Marshal(node.GetChildNode(nameof(HordeGarrisonContainModuleData.ExitOffset), null), &objT->ExitOffset, state);
+        Marshal(node.GetChildNode(nameof(HordeGarrisonContainModuleData.ExitPosition), null), &objT->ExitPosition, state);
         Marshal(node, (GarrisonContainModuleData*)objT, state);
     }
 }

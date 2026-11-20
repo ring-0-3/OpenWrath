@@ -10,4 +10,5 @@ public struct HordeGarrisonContainModuleData
     public unsafe Coord3D* EntryOffset;
     public unsafe Coord3D* EntryPosition;
     public unsafe Coord3D* ExitOffset;
+    public unsafe Coord3D* ExitPosition;
 }
