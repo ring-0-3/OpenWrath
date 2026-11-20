@@ -316,14 +316,31 @@ namespace BinaryAssetBuilder.Decompiler
             }
             else if (IsScalarLike(elem))
             {
-                // List<scalar> is authored as whitespace-joined text in a single attribute.
-                var sb = new StringBuilder();
-                for (uint i = 0; i < count; i++)
+                // A List<scalar> has two authoring shapes in the XSD. Most are a single attribute whose type is a
+                // whitespace-separated list (e.g. AnimationSoundClientBehavior.Frame : SageIntListMin1). A few are
+                // declared instead as a repeated child element, one scalar per occurrence (e.g.
+                // HordeContainModuleData.RankToReleaseWhenAttacking : SageInt maxOccurs="unbounded") -- there a
+                // single whitespace-joined value fails the element's scalar Pattern facet. Pick the shape the XSD
+                // declares: a repeated element when the name is a declared child element and not a declared
+                // attribute (matching SetAttr's attribute-wins precedence); otherwise the whitespace-joined
+                // attribute. When the schema is unavailable, _curElems is null and we keep the attribute form.
+                if (_curElems != null && _curElems.Contains(name) && (attrSet == null || !attrSet.Contains(name)))
                 {
-                    if (i > 0) sb.Append(' ');
-                    sb.Append(RenderScalarLike(elem, itemsOff + i * stride));
+                    for (uint i = 0; i < count; i++)
+                    {
+                        target.Add(new XElement(_ns + name, RenderScalarLike(elem, itemsOff + i * stride)));
+                    }
                 }
-                SetAttr(target, attrSet, name, sb.ToString());
+                else
+                {
+                    var sb = new StringBuilder();
+                    for (uint i = 0; i < count; i++)
+                    {
+                        if (i > 0) sb.Append(' ');
+                        sb.Append(RenderScalarLike(elem, itemsOff + i * stride));
+                    }
+                    SetAttr(target, attrSet, name, sb.ToString());
+                }
             }
             else
             {
