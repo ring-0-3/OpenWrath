@@ -162,6 +162,10 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(ConnectionLineManager), 0x7AEB73B2u, false),
             (typeof(PhaseEffect), 0x4877D566u, false),
             (typeof(Road), 0xDCF3C28Bu, false),
+            (typeof(AmbientStream), 0x1FBA5E31u, false),
+            (typeof(MusicTrack), 0xBCD0A189u, false),
+            (typeof(DialogEvent), 0x666459DDu, false),
+            (typeof(LargeGroupAudioMap), 0xCD55ECB7u, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
