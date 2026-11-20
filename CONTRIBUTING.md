@@ -13,15 +13,20 @@ repo ships none — bring-your-own), `source tools/dev-env.sh`, and build.
 The project's core promise is that the decompiler is **lossless**, and that's verified mechanically, not
 claimed:
 
-- **`tools/roundtrip.sh <source.xml>`** — compile → decompile → recompile → assert the bytes are identical for
-  every asset. A change is only "correct" if this stays green.
-- **`tools/corpus-roundtrip.sh`** + **`tools/coverage-report.py`** — run that check across many source files and
-  aggregate a per-type coverage matrix (see [docs/reference/COVERAGE.md](docs/reference/COVERAGE.md)).
+- **`tools/roundtrip.sh <source.xml>`** (closed-loop) — compile → decompile → recompile → assert the bytes are
+  identical to what our compiler produced. Proves the decompiler is a faithful inverse of the compiler. A change
+  is only "correct" if this stays green.
+- **`tools/roundtrip.sh --from-binary <stream.manifest>`** (ground-truth) — decompile a *shipped* stream,
+  recompile, and byte-compare to the bytes the game actually ships, bucketed per type. This is the stronger
+  measure and the one the coverage matrix reports.
+- **`tools/corpus-roundtrip.sh`** + **`tools/coverage-report.py`** — run the closed-loop check across many source
+  files as a self-consistency monitor. The authoritative fidelity numbers come from the ground-truth gate; see
+  [docs/reference/COVERAGE.md](docs/reference/COVERAGE.md) for the per-type matrix, method, and sampled instances.
 
 If you touch the decompiler, run the harness on the types you affect and keep the regression set byte-exact
-(ArmorTemplate, WeaponTemplate, LocomotorTemplate, AttributeModifier, GameObjects). **Never** modify the
-compile side (`Relo/`, `Marshaler.*.cs`, `SageBinaryData`, `Core`) to make a decompiler test pass — the
-compiler is the byte-exact oracle; changing it invalidates the measurement.
+(ArmorTemplate, WeaponTemplate, LocomotorTemplate, AttributeModifier, and the construction-yard GameObjects
+closed-loop). **Never** modify the compile side (`Relo/`, `Marshaler.*.cs`, `SageBinaryData`, `Core`) to make a
+decompiler test pass — the compiler is the byte-exact oracle; changing it invalidates the measurement.
 
 ## CI
 

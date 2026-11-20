@@ -14,20 +14,28 @@ tools that come with their own proof that they work, and docs that explain the f
 | **`BinaryAssetBuilder`** (compiler) | authoring XML → compiled SAGE asset streams, byte-faithful to EA's output. A Linux port of [Qibbi/BinaryAssetBuilder](https://github.com/Qibbi/BinaryAssetBuilder). |
 | **`bab-decompile`** (decompiler) | compiled asset streams → authoring XML. The structural *inverse* of the compiler, so its output recompiles **byte-identically**. |
 | **`pytools/`** | BIG4 archive pack/extract, RefPack (de)compression, and stream/manifest inspect + splice utilities — the rest of the mod pipeline. |
+| **`modkit/`** | `openwrath` — a config-driven developer CLI that drives the above: `detect`/`show` your setup, `mod bake` (compile overrides + splice into a stream + install), `mod revert`. Ships no game data. |
 | **`tools/`** | `roundtrip.sh` (the correctness gate), `dev-env.sh` (one-command dev setup), `kw-compile.sh`. |
 
 ## Reliability is measured, not claimed
 
-Correctness here is a *decidable property*, not a promise: `tools/roundtrip.sh` decompiles an asset, recompiles
-the result, and asserts the instance/relocation/import bytes are **identical**. If they differ, it's a failure.
-Verified byte-exact so far:
+Correctness here is a *decidable property*, not a promise. `tools/roundtrip.sh` has two modes, and the project
+is careful not to conflate them:
 
-- **ArmorTemplate** 207/207 · **LocomotorTemplate** 79/79 · **AttributeModifier** 78/78 · **WeaponTemplate** 456/456
-- **GameObjects** — including a full construction yard (`GDIConstructionYard`), the asset class other tools choke on.
+- **Closed-loop (lossless):** decompile an asset, recompile it, and assert the bytes are **identical** to what
+  our compiler produced. Proves the decompiler is a faithful inverse of the compiler. Verified e.g.
+  **ArmorTemplate** 207/207 · **WeaponTemplate** 456/456 · **LocomotorTemplate** · **AttributeModifier** · and
+  **GameObjects** including a full construction yard (`GDIConstructionYard`), the asset class other tools choke on.
+- **Ground-truth (byte-exact vs EA):** decompile a *shipped* stream, recompile, and byte-compare to the bytes the
+  **game itself ships** (`tools/roundtrip.sh --from-binary`). This is the stronger claim. As of 2026-11-20, of
+  the **37 registered asset types, 33 reproduce shipped bytes byte-exact** on sampled instances; GameObject and
+  Environment are *structurally* exact (same size) with a residual value-diff; two registered types have known
+  gaps. The honest, per-type matrix — with the exact instances sampled — is in
+  **[docs/reference/COVERAGE.md](docs/reference/COVERAGE.md)**.
 
-In progress: whole-corpus coverage reporting, and robust decompilation of arbitrary third-party mods.
-See **[ROADMAP.md](ROADMAP.md)** for what's done and what's planned (incl. the art/asset compilers, Nix
-packaging, and docs/tutorials).
+GameObjects are byte-exact *closed-loop* but not yet *vs shipped bytes* — closing that gap is the next fidelity
+milestone. In progress too: the developer modkit, and wider per-type coverage. See **[ROADMAP.md](ROADMAP.md)**
+for what's done and planned (incl. the art/asset content pipeline, Nix packaging, and docs/tutorials).
 
 ## Quick start
 

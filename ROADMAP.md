@@ -1,8 +1,9 @@
 # Roadmap
 
-Where OpenWrath is and where it's going. Status is honest: a thing is only "done" if it's **verified**
-(for round-trips, that means byte-exact via `tools/roundtrip.sh`). Help is welcome on anything below —
-especially the 🔧 and 📋 items.
+Where OpenWrath is and where it's going. Status is honest: a thing is only "done" if it's **verified**. For
+fidelity, that means measured by `tools/roundtrip.sh` — and the strong claim is the **ground-truth** mode
+(`--from-binary`), which compares our output to the bytes the game actually ships, not just to our own compiler's
+output. Help is welcome on anything below — especially the 🔧 and 📋 items.
 
 Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 
@@ -10,78 +11,103 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - ✅ Native-Linux port of BinaryAssetBuilder (runs under `dotnet`, no Wine), byte-faithful to EA's output.
 - ✅ Correct x64→32-bit on-disk pointer layout; case-insensitive paths; native XInclude / expressions / RefPack.
 - ✅ Cross-stream reference typing via reference manifests (`-rm`).
-- 📋 Flesh out any remaining under-exercised asset/module structs surfaced by the corpus sweep below.
+- ✅ **37 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
+  breadth batch (Upgrade, SpecialPower, OCL, FXList, DamageFX, ExperienceLevel, LogicCommand(Set), Stance,
+  RadiusCursor, Weather, Mouse, OnlineChatColors, ConnectionLineManager, PhaseEffect, Road, MultiplayerColor)
+  and the audio/LOD/environment batch (AmbientStream, MusicTrack, DialogEvent, LargeGroupAudioMap,
+  Static/Dynamic GameLOD, GameLODPreset, CrowdResponse, VideoEventList, Environment, AudioEvent, Multisound,
+  MiscAudio, AudioSettings, AudioLOD).
+- ✅ Compile-fail bug-class fixes surfaced by the ground-truth gate (field-order error; out-of-schema enum
+  values) — see Verification.
+- 🔧 Close the remaining per-type gaps the matrix lists (MultiplayerColor recompile; GameObject value-diff).
 
 ## Decompiler (binary → XML)
 - ✅ Generic read-walk over the shared struct layout — one engine reads every type, no per-type decompile code.
 - ✅ Full value vocabulary (scalars, units, enums, bit-flags, strings, colors/coords/ranges, data blobs).
 - ✅ Reference / import resolution to authored **names** (the lossless win over schema-walking decompilers).
-- ✅ Polymorphic module dispatch → **GameObjects byte-exact**, incl. construction yards.
-- ✅ Module-id / StringHash recovery via the compiler's `StringHashes.xml`.
+- ✅ Polymorphic module dispatch for GameObjects (incl. construction yards) — closed-loop byte-exact.
+- ✅ Module-id / StringHash recovery via a master `StringHashes.xml` built from an SDK compile, so inherited /
+  base-object string values decompile to names rather than hex.
 - ✅ **Foreign-mod robustness** — decompiles *any* third-party compiled stream end-to-end without crashing
-  (verified on Second Isomer's full **43,994-asset** stream, zero crashes): bounds-checked reads, graceful
-  degradation (labeled `<RawAsset>`/`<UnknownModule>` blocks), TypeHash schema-version detection (single schema
-  confirmed across the test mod). This retires the last reliance on Windows decompiling tools.
-- 🔧 **Raise data-type coverage** — complete the partial gameplay structs, now measured against the game's
-  *shipped* bytes rather than guessed. The **GameObject** tail has had two structural bugs fixed this way — an
-  `ActiveBody` field-order error and the out-of-schema enum case (see below) — leaving a smaller residual tail
-  (a few epic units + `MedicalBay`/`CommandPost` variants, `AlienMillipedeBody`, `AlienCorrupter`,
-  `GDIDigInBuilding`). Plus ExperienceLevelTemplate, LogicCommand, AIStrategicStateDefinition, and currently
-  unmodeled (`unknown-type`) gameplay types. Method: first-diff offset → module → XSD → add/fix field → re-verify
-  against shipped bytes. (Art/W3D/texture/particle types are **out of scope here** → art pipeline.)
-- 🔧 Master `StringHashes.xml` from a corpus compile, to recover inherited/base-object string values losslessly.
+  (exercised on a full large mod stream of tens of thousands of assets, zero crashes): bounds-checked reads,
+  graceful degradation (labeled `<RawAsset>` / `<UnknownModule>` blocks), and TypeHash schema-version detection.
+  This removes the last reliance on Windows-only decompiling tools.
+- 🔧 **Raise data-type coverage**, measured against the game's *shipped* bytes. Method: first-diff offset →
+  module → schema → add/fix field → re-verify against shipped bytes. The GameObject tail has had structural bugs
+  fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case), bringing GameObjects to
+  **same-size, value-diff** vs shipped (see below). Art / W3D / texture / particle types are **out of scope
+  here** → content pipeline.
 
 ## Verification & reliability
-- ✅ `tools/roundtrip.sh` — decompile → recompile → assert byte-identical, per asset, manifest-driven.
-- ✅ Verified byte-exact (round-trip): ArmorTemplate 207/207, WeaponTemplate 456/456, LocomotorTemplate 79/79,
-  AttributeModifier 78/78, UpgradeTemplate 186/186, SpecialPowerTemplate 258/258, ObjectCreationList 267/267,
-  GameObjects incl. `GDIConstructionYard`.
-- ✅ **Ground-truth verification — our output vs the game's *shipped* bytes** (`tools/roundtrip.sh --from-binary`).
-  Round-trip proves the toolchain is internally *lossless*; this proves the output is *what the game actually
-  loads*. The gate decompiles a shipped (or mod) linked stream, recompiles it, and byte-compares every asset to
-  the original bytes, bucketed per type (byte-exact / same-size value-diff / size-mismatch, with first-diff
-  offsets). It has already surfaced and confirmed real toolchain bugs that round-trip alone could not (a
-  field-order error; out-of-schema enum values). Verified on `static_common`. 🔧 **Next:** extend across more
-  shipped streams, and *harvest* from it the set of values the shipped data uses that the authoring schema omits.
-- 🔧 **Tolerant-but-honest validation.** In places the authoring schema is a strict *subset* of what the game's
-  own shipped data uses (e.g. enum fields holding integer values the schema never names). Rather than refuse to
-  reproduce data the game itself ships and runs, the compiler accepts an out-of-schema integer value — but says
-  so, at the right volume: **informational** when the value is attested in shipped data, a loud **warning** when
-  it is novel and unverified. Tolerance + a single warning have landed; the info-vs-warning split awaits the
-  harvested attested-value set — **harvested from shipped data, never hardcoded**, so every "attested" claim is
-  backed by evidence.
-- 🔧 **Whole-corpus coverage** — `tools/corpus-roundtrip.sh` + `docs/reference/COVERAGE.md` publish a *measured*
-  per-type matrix (currently **99.3% byte-exact across the 5 core gameplay types**; see the file for honest scope).
-  **Next:** compile source with include-context so the broader type space (FX, Upgrade, CommandSet, LogicCommand,
-  SpecialPower, …) is actually measured — turning "5 types" into a gameplay-wide number.
+- ✅ `tools/roundtrip.sh` — the correctness gate, two modes:
+  - **closed-loop** (`<source.xml>`): compile → decompile → recompile → assert byte-identical. Proves the
+    decompiler is a faithful inverse of the compiler. Verified byte-exact e.g. ArmorTemplate 207/207,
+    WeaponTemplate 456/456, LocomotorTemplate, AttributeModifier, and GameObjects incl. `GDIConstructionYard`.
+  - **ground-truth** (`--from-binary <stream.manifest>`): decompile a *shipped* linked stream, recompile, and
+    byte-compare every asset to the **original shipped bytes**, bucketed per type (byte-exact / same-size
+    value-diff / size-mismatch / recompile-missing, with first-diff offsets). This proves the output is *what
+    the game actually loads*, and it has surfaced real bugs closed-loop alone could not.
+- ✅ **Ground-truth results (2026-11-20):** of the 37 registered types, **33 reproduce EA's shipped bytes
+  byte-exact on sampled instances**; GameObject and Environment are structurally exact with a residual
+  value-diff; MultiplayerColor has a recompile gap; Road has no instances in the sampled streams. Full matrix,
+  sampled instances, and method in **[docs/reference/COVERAGE.md](docs/reference/COVERAGE.md)**.
+- ✅ **Master `StringHashes.xml`** harvested from an SDK compile, so module-id / inherited string values resolve
+  during decompilation.
+- 🔧 **Finish GameObject byte-exactness vs shipped bytes** — the residual value-diff is localized to the
+  module / weapon-set region (incl. the MARV turret block). This is the next fidelity milestone.
+- 🔧 **Tolerant-but-honest validation.** Where the authoring schema is a strict *subset* of what shipped data
+  uses (e.g. enum fields holding integer values the schema never names), the compiler reproduces the shipped
+  value rather than refusing it — **informational** when attested in shipped data, a loud **warning** when novel.
+  Tolerance + a single warning have landed; the info-vs-warning split awaits a harvested attested-value set
+  (**harvested from shipped data, never hardcoded**).
 - ✅ **CI** — builds the compiler + decompiler on every push/PR (`.github/workflows/`); the data-dependent
-  round-trip gate runs locally / self-hosted (EA data can't live in CI).
+  round-trip gate runs locally / self-hosted (game data can't live in CI).
+
+## Developer modkit
+- 🔧 **`modkit/openwrath`** — a developer-facing, **config-driven** CLI that turns the hand-run pipeline into a
+  few commands. Ships **zero game data**; discovers your own install/SDK and keeps all paths in a per-user config
+  outside any repo. Implemented today:
+  - ✅ `detect` / `show` — auto-discover the install / prefix / mods / SDK and write/report the config.
+  - ✅ `mod bake` — compile a mod's XML overrides and splice them into a target stream, repack the big,
+    auto-backup, install. (A *mod* is bring-your-own; the modkit is the capability, it bundles no mod or EA data.)
+  - ✅ `mod revert` — restore a target's big from the last backup.
+  - 📋 `trace` (walk a unit → weapons → projectiles → effects) and `stringhashes` (regenerate the master table
+    from your own SDK).
+  See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
+  make the verified toolchain usable, not just correct.
 
 ## Platform & extensibility
-OpenWrath is meant to be *built on* — both as a foundation other modding frameworks sit atop, and as a host for
-third-party **modules** that add capability. That makes its boundary a kind of public API, which shapes the work
-below. Each item rests on the same idea as the verification gate: correctness anyone can *check*, not merely trust.
-- 📋 **Structured diagnostics** — stable, machine-readable codes (not just prose), so tools built on OpenWrath can
-  react programmatically and tell *their* bug from ours.
-- 📋 **Machine-readable reliability map** — publish the per-type ground-truth bucket matrix as data, so a framework
-  can ask *what is proven reliable* before depending on it.
+OpenWrath is meant to be *built on*. Each item rests on the same idea as the verification gate: correctness
+anyone can *check*, not merely trust.
+- 📋 **Structured diagnostics** — stable, machine-readable codes, so tools built on OpenWrath can tell *their*
+  bug from ours.
+- 📋 **Machine-readable reliability map** — publish the per-type ground-truth bucket matrix as data, so a
+  framework can ask *what is proven reliable* before depending on it.
 - 📋 **Opt-in strict mode** — escalate the "novel / unverified value" warning to a hard error, giving downstream
-  frameworks and CI a provable guarantee: everything emitted is schema-named or shipped-attested.
-- 📋 **Documented module / extension API** — clean, stable seams for third-party handlers, formats, and renderers,
-  with the round-trip + ground-truth gate as the module's *acceptance test*, so a module's correctness is
-  decidable by anyone rather than taken on trust.
+  CI a provable guarantee: everything emitted is schema-named or shipped-attested.
+- 📋 **Documented extension API** — clean, stable seams for third-party handlers and formats, with the
+  round-trip + ground-truth gate as the acceptance test.
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
-- 📋 **Art / asset compilers** for new-content mods — the big build: textures (DDS), meshes/animation (W3D),
-  and audio. This is what unlocks making *new* assets, not just editing existing ones.
+- 📋 **Art / asset compilers** for new-content mods — the big build: textures (DDS), meshes/animation (W3D), and
+  audio files. This is what unlocks making *new* assets, not just editing existing ones. It is a separate effort
+  from the data toolchain above.
 
 ## Packaging & docs
-- 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no EA content).
+- 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no game content).
 - 🔧 **Docs & tutorials** — the "Understanding OpenWrath" concept guide has started (`docs/`: the big picture +
-  asset streams); more chapters, "your first mod in 15 minutes," and explained write-ups of the **asset format**
-  we've reverse-engineered. Not a dumbed-down tool, but a teaching layer so the format is *understood*, not hoarded.
+  asset streams); more chapters, "your first mod," and plain write-ups of the **asset file format**. A teaching
+  layer so the format is *understood*, not hoarded.
+
+## How we calibrate against prior tooling
+The closest reference point, WrathEd, recognizes a wider set of top-level types (~66) but is Windows-only, is
+**lossy** (schema-walk decompilation that does not reproduce exact bytes), and crashes on some inputs
+(GameObject among them). OpenWrath is deliberately **narrower but deeper**: fewer types, but each one measured
+**byte-exact or honestly bucketed against shipped data**, lossless where it claims to be, native-Linux, and
+crash-free on arbitrary input. We are **not** at type-count parity and do not claim to be — the goal is a
+measured, trustworthy core that widens over time, not a bigger unverified surface.
 
 ## Non-goals
-- Shipping EA game content or SDK assets. OpenWrath is interop tooling; you bring your own legally-owned data.
+- Shipping game content or SDK assets. OpenWrath is interop tooling; you bring your own legally-owned data.
 - A GUI-first workflow at the expense of exposed power. Great docs over a hidden "simple mode."

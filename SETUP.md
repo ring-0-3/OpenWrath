@@ -106,8 +106,19 @@ rather than asserted.
 
 ## 5. Reproducing our reported results
 
-With the three data inputs above in place, the following should round-trip byte-exact:
+With the three data inputs above in place, the following **closed-loop** round-trips should be byte-exact
+(our decompile → recompile reproduces our own compiled bytes):
 `GlobalData/Armor.xml` (207), `GlobalData/Locomotor.xml` (79), `GlobalData/AttributeModifier.xml` (78),
 `GlobalData/Weapon.xml` (456), and GameObjects such as `GDI/Structures/GDIConstructionYard.xml`,
-`GDI/Structures/GDIWallHub.xml`. Broader per-type coverage is tracked by the corpus sweep (run the harness
-across the full `KanesWrathXMLFiles` tree).
+`GDI/Structures/GDIWallHub.xml`.
+
+The stronger **ground-truth** measure — fidelity to the bytes the game actually ships — uses `--from-binary`
+against a decompressed linked stream you supply:
+```bash
+tools/roundtrip.sh --from-binary /path/to/static_common.manifest \
+  --only AlienAssimilatorArmor --stringhashes /path/to/StringHashes.xml
+# -> BYTEEXACT  ArmorTemplate:AlienAssimilatorArmor
+```
+The authoritative per-type fidelity matrix, the exact instances sampled, and the method/date are in
+[docs/reference/COVERAGE.md](docs/reference/COVERAGE.md). Broader closed-loop per-type coverage is tracked by the
+corpus sweep (`tools/corpus-roundtrip.sh` across the `KanesWrathXMLFiles` tree).
