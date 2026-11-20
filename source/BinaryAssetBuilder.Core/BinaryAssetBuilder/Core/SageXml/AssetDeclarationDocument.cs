@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Xml;
 using System.Xml.Schema;
@@ -1501,18 +1503,23 @@ namespace BinaryAssetBuilder.Core.SageXml
         {
             if (args.Exception is XmlSchemaValidationException exception)
             {
-                // Engine-tolerance: the authoring schema's enumeration facet is a strict SUBSET of the
-                // integer domain the game actually uses for some enum fields -- the game's own shipped data
-                // stores values the schema doesn't name, and reads these fields as raw integers. Rather than
-                // refuse to reproduce data the game itself ships and runs, accept an integer value that fails
-                // ONLY the enumeration facet (with a loud warning). Non-integer and other-facet failures stay
-                // hard errors, so genuine authoring mistakes are still caught.
+                // Schema-tolerance: the authoring XSD's enumeration facet for some fields is a strict SUBSET of
+                // the value domain the shipped data actually uses. Two shapes occur:
+                //   (a) a raw integer outside the schema's named set -- the field is stored/read as a plain
+                //       integer and the shipped data carries values the facet never named; and
+                //   (b) a value that is a genuine MEMBER NAME of the CLR enum the field marshals through, which
+                //       the facet omits (the XSD enumeration is a hand-maintained subset of the runtime enum).
+                // In both shapes the compiler marshals the field by the CLR enum / integer, so the value
+                // reproduces the exact byte. Accept these (with a loud warning). Non-integer values that are not
+                // defined members of the resolved enum, and any other-facet failure, stay hard errors so genuine
+                // authoring mistakes are still caught.
                 if (TryGetRelaxableEnumValue(exception, out string detail))
                 {
                     _tracer.TraceWarning(
                         "Out-of-schema enum value accepted in '{0}': {1}. This value is not in the schema's named " +
-                        "set; the field is treated as a raw integer. If hand-authored, it is undefined by the schema " +
-                        "and its in-game effect is unverified -- yours to validate.",
+                        "set but is a defined member of the field's enum (or a raw integer); it marshals to the " +
+                        "same byte. If hand-authored, it is undefined by the schema and its in-game effect is " +
+                        "unverified -- yours to validate.",
                         SourcePath, detail);
                     return;
                 }
@@ -1529,9 +1536,11 @@ namespace BinaryAssetBuilder.Core.SageXml
             throw new BinaryAssetBuilderException(args.Exception, ErrorCode.SchemaValidation, "XML validation error encountered in '{0}'", SourcePath);
         }
 
-        // True only for the narrow "integer value that fails just the enumeration facet" case described in
-        // HandleValidationEvents. Message-based detection fails SAFE: if the phrasing is not recognized the
-        // caller keeps the original hard error, so this can never wrongly accept a non-enumeration failure.
+        // True only for the narrow "value fails just the enumeration facet, AND is either a raw integer or a
+        // defined member name of the CLR enum backing this schema type" case described in HandleValidationEvents.
+        // Detection fails SAFE: if the phrasing is not recognized, or the value is neither an integer nor a
+        // resolved enum member, the caller keeps the original hard error -- so this can never wrongly accept a
+        // non-enumeration failure or an undefined value.
         private static bool TryGetRelaxableEnumValue(XmlSchemaValidationException exception, out string detail)
         {
             detail = null;
@@ -1553,12 +1562,104 @@ namespace BinaryAssetBuilder.Core.SageXml
                 return false;
             }
             string value = message.Substring(start, end - start);
-            if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+            // Shape (a): raw integer outside the named set.
+            bool relax = long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _);
+            // Shape (b): a genuine member name of the CLR enum this schema type marshals through.
+            if (!relax)
+            {
+                Type enumType = ResolveEnumType(exception, message);
+                if (enumType is not null && Array.IndexOf(Enum.GetNames(enumType), value) >= 0)
+                {
+                    relax = true;
+                }
+            }
+            if (!relax)
             {
                 return false;
             }
             detail = message.Substring(0, end + 1).Trim();
             return true;
+        }
+
+        // Caches schema-type-name -> CLR enum Type lookups. Resolution only runs on the validation-error path,
+        // but the cache keeps repeated out-of-schema values on the same type cheap.
+        private static readonly ConcurrentDictionary<string, Type> _enumTypeByName = new ConcurrentDictionary<string, Type>(StringComparer.Ordinal);
+
+        // Resolve the CLR enum Type that backs the schema simple type the validator rejected. Prefer the schema
+        // object the validator flagged; fall back to the datatype local name named in the message. Returns null
+        // when no enum can be resolved, which keeps the caller failing safe.
+        private static Type ResolveEnumType(XmlSchemaValidationException exception, string message)
+        {
+            string name = null;
+            switch (exception?.SourceSchemaObject)
+            {
+                case XmlSchemaAttribute attr when attr.AttributeSchemaType is not null:
+                    name = attr.AttributeSchemaType.QualifiedName.Name;
+                    break;
+                case XmlSchemaElement elem when elem.ElementSchemaType is not null:
+                    name = elem.ElementSchemaType.QualifiedName.Name;
+                    break;
+            }
+            if (string.IsNullOrEmpty(name))
+            {
+                name = ExtractDatatypeLocalName(message);
+            }
+            if (string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+            return _enumTypeByName.GetOrAdd(name, FindLoadedEnum);
+        }
+
+        // Pull the datatype local name out of a validation message of the form
+        // "... according to its datatype 'uri:ea.com:eala:asset:LogicCommandType' - The Enumeration ...".
+        private static string ExtractDatatypeLocalName(string message)
+        {
+            const string marker = "datatype '";
+            int start = message.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return null;
+            }
+            start += marker.Length;
+            int end = message.IndexOf('\'', start);
+            if (end < 0)
+            {
+                return null;
+            }
+            string qualified = message.Substring(start, end - start);
+            int colon = qualified.LastIndexOf(':');
+            return colon >= 0 ? qualified.Substring(colon + 1) : qualified;
+        }
+
+        // Find a loaded CLR enum whose simple name matches the schema type name. The game-data types are loaded
+        // into the default load context by the compiler plugins before documents are validated.
+        private static Type FindLoadedEnum(string name)
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException ex)
+                {
+                    types = ex.Types;
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                foreach (Type type in types)
+                {
+                    if (type is not null && type.IsEnum && string.Equals(type.Name, name, StringComparison.Ordinal))
+                    {
+                        return type;
+                    }
+                }
+            }
+            return null;
         }
 
         public void Validate()
