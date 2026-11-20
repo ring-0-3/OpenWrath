@@ -34,6 +34,7 @@ namespace BinaryAssetBuilder.Decompiler.Cli
                     "decompile-stream" => DecompileStream(args),
                     "info" => Info(args),
                     "layout" => Layout(args),
+                    "typescan" => TypeScan(args),
                     _ => Fail($"unknown verb '{args[0]}'"),
                 };
             }
@@ -48,6 +49,42 @@ namespace BinaryAssetBuilder.Decompiler.Cli
         {
             Console.Error.WriteLine("error: " + msg);
             return 2;
+        }
+
+        // Discovery helper: group assets by the TYPE NAME parsed from the manifest's qualified
+        // name table ("TypeName:InstanceName"), so even UNREGISTERED types surface by name, with
+        // their TypeId, distinct TypeHash(es), count, and sample instance names.
+        private static int TypeScan(string[] args)
+        {
+            Manifest m = Manifest.Load(args[1]);
+            TypeRegistry reg = TypeRegistry.Build();
+            var count = new Dictionary<string, int>();
+            var ids = new Dictionary<string, uint>();
+            var hashes = new Dictionary<string, HashSet<uint>>();
+            var samples = new Dictionary<string, List<string>>();
+            for (int i = 0; i < m.Entries.Length; i++)
+            {
+                AssetStream.AssetEntry e = m.Entries[i];
+                string full = m.Names[i] ?? "";
+                int c = full.IndexOf(':');
+                string tn = c >= 0 ? full.Substring(0, c) : "(noname)";
+                string inst = c >= 0 ? full.Substring(c + 1) : full;
+                count.TryGetValue(tn, out int n); count[tn] = n + 1;
+                ids[tn] = e.TypeId;
+                if (!hashes.TryGetValue(tn, out HashSet<uint> hs)) { hs = new HashSet<uint>(); hashes[tn] = hs; }
+                hs.Add(e.TypeHash);
+                if (!samples.TryGetValue(tn, out List<string> sl)) { sl = new List<string>(); samples[tn] = sl; }
+                if (sl.Count < 4) { sl.Add(inst); }
+            }
+            foreach (KeyValuePair<string, int> kv in count.OrderByDescending(k => k.Value))
+            {
+                string tn = kv.Key;
+                bool registered = reg.Get(ids[tn]) != null;
+                string hh = string.Join(",", hashes[tn].Select(h => h.ToString("x8")));
+                Console.WriteLine($"{(registered ? "REG " : "--- ")} TypeId=0x{ids[tn]:x8} TypeHash=[{hh}] count={kv.Value,-5} {tn}");
+                Console.WriteLine($"        samples: {string.Join(", ", samples[tn])}");
+            }
+            return 0;
         }
 
         private static int Info(string[] args)
