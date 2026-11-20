@@ -293,7 +293,12 @@ namespace BinaryAssetBuilder.Decompiler.Cli
                 if (outdir != null)
                 {
                     var doc = new XDocument(new XElement(AssetDecompiler.AssetNs + "AssetDeclaration", el));
-                    string fn = (asset.Name ?? asset.InstanceId.ToString("x8")) + ".xml";
+                    // Qualify the output file by type name: instance names are only unique PER TYPE (e.g. both
+                    // AudioLOD:Low and GameLODPreset:Low exist), so an instance-name-only file name lets one type
+                    // silently overwrite the other's XML and drop it from the round-trip. The XML id attribute
+                    // still carries the bare instance name; only the on-disk file name is qualified.
+                    string typeName = reg.Get(asset.TypeId)?.Name ?? asset.TypeId.ToString("x8");
+                    string fn = typeName + "." + (asset.Name ?? asset.InstanceId.ToString("x8")) + ".xml";
                     WriteXml(doc, Path.Combine(outdir, SafeName(fn)));
                     written++;
                 }
