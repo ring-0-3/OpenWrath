@@ -166,6 +166,9 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(MusicTrack), 0xBCD0A189u, false),
             (typeof(DialogEvent), 0x666459DDu, false),
             (typeof(LargeGroupAudioMap), 0xCD55ECB7u, false),
+            (typeof(StaticGameLOD), 0x352AA045u, false),
+            (typeof(DynamicGameLOD), 0xA2EDC094u, false),
+            (typeof(GameLODPreset), 0xD09C0652u, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
