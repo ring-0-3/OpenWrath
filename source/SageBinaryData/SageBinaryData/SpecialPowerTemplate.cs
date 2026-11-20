@@ -31,17 +31,31 @@ namespace SageBinaryData
         NOT_WHILE_BENEATH_BRIDGE,
         DISABLE_FOR_MULTIPLE_SELECTION,
         CHECK_SPECIALPOWERSTORE_CANUSE,
+        USE_CASTER_RANGE,
+        CAN_PATH_TO,
+        RECHARGE_ALL_OBJECT_POWERS_ON_USE,
+        SCALE_AOI_RADIUS,
+        SPECIAL_TRAVEL_POWER,
         USE_CHAINED_COMMAND_MONEY
     }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct SpecialPowerTemplateBitFlag
     {
-        public const int Count = 25;
+        public const int Count = 30;
         public const int BitsInSpan = 32;
         public const int NumSpans = (Count + (BitsInSpan - 1)) / BitsInSpan;
 
         public unsafe fixed uint Value[NumSpans];
+    }
+
+    public enum MetagamePhaseEnum
+    {
+        OPERATIONS,
+        RESOLVE_POWERS,
+        MOVEMENT,
+        BATTLE,
+        UPKEEP
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -111,11 +125,11 @@ namespace SageBinaryData
         public MetagameOperationsEnums MetaGameOperation;
         public MetaGamePhaseBitflags ActiveMetaGamePhases;
         public ObjectStatusBitFlags StrikeForceRejectStatus;
-        public SageBool StrikeForceRejectMatchAll;
-        public MetaGameDependenciesType MetaGameDependencies;
         public ObjectFilter ObjectFilter;
         public ObjectFilter ForbiddenObjectFilter;
         public unsafe GameDependencyType* GameDependency;
+        public unsafe MetaGameDependenciesType* MetaGameDependencies;
+        public unsafe TypedAssetId<UpgradeTemplate>* MetaUpgradeToGrant;
         public SageBool WaypointModeTerminal;
     }
 }

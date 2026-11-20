@@ -45,9 +45,14 @@ public static partial class Marshaler
         Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.WaypointModeTerminal), "true"), &objT->WaypointModeTerminal, state);
         Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.TimerImage), null), &objT->TimerImage, state);
         Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.ReachableTargetsCircleDisplayRadius), null), &objT->ReachableTargetsCircleDisplayRadius, state);
+        Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.MetaGameOperation), "INVALID"), &objT->MetaGameOperation, state);
+        Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.ActiveMetaGamePhases), ""), &objT->ActiveMetaGamePhases, state);
+        Marshal(node.GetAttributeValue(nameof(SpecialPowerTemplate.StrikeForceRejectStatus), ""), &objT->StrikeForceRejectStatus, state);
         Marshal(node.GetChildNode(nameof(SpecialPowerTemplate.ObjectFilter), null), &objT->ObjectFilter, state);
         Marshal(node.GetChildNode(nameof(SpecialPowerTemplate.ForbiddenObjectFilter), null), &objT->ForbiddenObjectFilter, state);
         Marshal(node.GetChildNode(nameof(SpecialPowerTemplate.GameDependency), null), &objT->GameDependency, state);
+        Marshal(node.GetChildNode(nameof(SpecialPowerTemplate.MetaGameDependencies), null), &objT->MetaGameDependencies, state);
+        Marshal(node.GetChildNode(nameof(SpecialPowerTemplate.MetaUpgradeToGrant), null), &objT->MetaUpgradeToGrant, state);
         Marshal(node, (BaseInheritableAsset*)objT, state);
     }
 }

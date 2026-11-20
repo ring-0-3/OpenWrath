@@ -415,6 +415,11 @@ namespace BinaryAssetBuilder.Decompiler
 
             if (elem == typeof(DataBlob)) { ReadDataBlob(to, name, target, attrSet); return; }
 
+            // A pointer to a bit-flag bitset struct (e.g. SpecialPowerTemplate.MetaGameDependencies) -> the flag
+            // tokens at the followed offset. A null pointer returned above = omitted field, so the tokens are
+            // only ever emitted when EA actually allocated the block (no default leak on recompile).
+            if (IsBitFlagsStruct(elem)) { SetAttr(target, attrSet, name, RenderBitFlags(elem, to, TypeLayout.Get(elem).SizeX86)); return; }
+
             // A pointer to a scalar / wrapper value -> attribute at the followed offset.
             if (elem.IsEnum) { SetAttr(target, attrSet, name, RenderEnum(elem, to, TypeLayout.Get(elem).SizeX86)); return; }
             string scalar = RenderScalar(elem, to, null);

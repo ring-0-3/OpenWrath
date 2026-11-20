@@ -2245,6 +2245,136 @@ public static partial class Marshaler
         Marshal(value.GetText(), objT, state);
     }
 
+    public static unsafe void Marshal(string text, MetaGamePhaseBitflags* objT, Tracker state)
+    {
+        string[] tokens = text.Split(WhiteSpaces, System.StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+        {
+            return;
+        }
+        for (int idy = 0; idy < tokens.Length; ++idy)
+        {
+            string token = tokens[idy];
+            bool includeToken = true;
+            if (token[0] == '+')
+            {
+                includeToken = true;
+            }
+            else if (token[0] == '-')
+            {
+                includeToken = false;
+            }
+            if (string.Equals(token, "ALL", System.StringComparison.Ordinal))
+            {
+                for (int idx = 0; idx < MetaGamePhaseBitflags.NumSpans; ++idx)
+                {
+                    objT->Value[idx] = uint.MaxValue;
+                }
+                continue;
+            }
+            MetagamePhaseEnum value = (MetagamePhaseEnum)(-1);
+            Marshal(token, &value, state);
+            if (value != (MetagamePhaseEnum)(-1))
+            {
+                uint uintValue = (uint)value;
+                if (uintValue < MetaGamePhaseBitflags.Count)
+                {
+                    if (includeToken)
+                    {
+                        objT->Value[uintValue / MetaGamePhaseBitflags.BitsInSpan] |= (uint)(1 << (int)(uintValue % MetaGamePhaseBitflags.BitsInSpan));
+                    }
+                    else
+                    {
+                        objT->Value[uintValue / MetaGamePhaseBitflags.BitsInSpan] ^= (uint)(1 << (int)(uintValue % MetaGamePhaseBitflags.BitsInSpan));
+                    }
+                }
+            }
+        }
+        for (int idx = 0; idx < MetaGamePhaseBitflags.NumSpans; ++idx)
+        {
+            state.InplaceEndianToPlatform(&objT->Value[idx]);
+        }
+    }
+
+    public static unsafe void Marshal(Value value, MetaGamePhaseBitflags* objT, Tracker state)
+    {
+        if (value is null)
+        {
+            return;
+        }
+        Marshal(value.GetText(), objT, state);
+    }
+
+    public static unsafe void Marshal(string text, MetaGameDependenciesType* objT, Tracker state)
+    {
+        string[] tokens = text.Split(WhiteSpaces, System.StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+        {
+            return;
+        }
+        for (int idy = 0; idy < tokens.Length; ++idy)
+        {
+            string token = tokens[idy];
+            bool includeToken = true;
+            if (token[0] == '+')
+            {
+                includeToken = true;
+            }
+            else if (token[0] == '-')
+            {
+                includeToken = false;
+            }
+            if (string.Equals(token, "ALL", System.StringComparison.Ordinal))
+            {
+                for (int idx = 0; idx < MetaGameDependenciesType.NumSpans; ++idx)
+                {
+                    objT->Value[idx] = uint.MaxValue;
+                }
+                continue;
+            }
+            MetaGameDependencyEnum value = (MetaGameDependencyEnum)(-1);
+            Marshal(token, &value, state);
+            if (value != (MetaGameDependencyEnum)(-1))
+            {
+                uint uintValue = (uint)value;
+                if (uintValue < MetaGameDependenciesType.Count)
+                {
+                    if (includeToken)
+                    {
+                        objT->Value[uintValue / MetaGameDependenciesType.BitsInSpan] |= (uint)(1 << (int)(uintValue % MetaGameDependenciesType.BitsInSpan));
+                    }
+                    else
+                    {
+                        objT->Value[uintValue / MetaGameDependenciesType.BitsInSpan] ^= (uint)(1 << (int)(uintValue % MetaGameDependenciesType.BitsInSpan));
+                    }
+                }
+            }
+        }
+        for (int idx = 0; idx < MetaGameDependenciesType.NumSpans; ++idx)
+        {
+            state.InplaceEndianToPlatform(&objT->Value[idx]);
+        }
+    }
+
+    public static unsafe void Marshal(Value value, MetaGameDependenciesType* objT, Tracker state)
+    {
+        if (value is null)
+        {
+            return;
+        }
+        Marshal(value.GetText(), objT, state);
+    }
+
+    public static unsafe void Marshal(Node node, MetaGameDependenciesType** objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(MetaGameDependenciesType), 1u, typeof(MetaGameDependenciesType));
+        Marshal(node.GetValue(), *objT, state);
+    }
+
     public static unsafe void Marshal(string text, WeaponAffectsBitFlags* objT, Tracker state)
     {
         string[] tokens = text.Split(WhiteSpaces, System.StringSplitOptions.RemoveEmptyEntries);
