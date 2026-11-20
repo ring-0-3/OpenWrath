@@ -172,6 +172,11 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(CrowdResponse), 0x0CF7A495u, false),
             (typeof(VideoEventList), 0x18A04ECCu, false),
             (typeof(SageBinaryData.Environment), 0x64ED86BAu, false),
+            (typeof(AudioEvent), 0xD3FED271u, false),
+            (typeof(Multisound), 0xA503DBF8u, false),
+            (typeof(MiscAudio), 0x92862F79u, false),
+            (typeof(AudioSettings), 0xD842549Du, false),
+            (typeof(AudioLOD), 0x8F6AD19Du, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);
