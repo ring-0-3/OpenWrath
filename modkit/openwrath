@@ -254,6 +254,21 @@ def declared_overrides(source_xml: Path) -> list[str]:
     return ids
 
 
+def game_running() -> bool:
+    """True if the Kane's Wrath EXECUTABLE is running — swapping its big out from under it freezes it.
+
+    Matches the game exe (cnc3ep1.dat/.exe) specifically, not mere path mentions (Steam wrappers,
+    our own tooling, or a shell command that happens to name the game) — those are filtered out.
+    """
+    import subprocess
+    r = subprocess.run(["pgrep", "-afi", r"cnc3ep1\.(dat|exe)"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return False
+    ours = ("openwrath", "modkit", "pgrep", "bab-decompile", "BinaryAssetBuilder",
+            "splice_asset.py", "big_replace.py", "bigextract.py")
+    return any(ln.strip() and not any(o in ln for o in ours) for ln in r.stdout.splitlines())
+
+
 def _run(cmd: list[str], **kw):
     import subprocess
     env = dict(os.environ, DOTNET_ROLL_FORWARD="LatestMajor",
@@ -334,6 +349,10 @@ def cmd_mod_bake(args) -> int:
 
     cfg = read_config()
     _need(cfg, "openwrath", "sdk", "base_manifests", "schema", "mods_dir")
+    if game_running() and not args.force:
+        sys.exit("error: Kane's Wrath appears to be RUNNING. Baking swaps its data file out from under\n"
+                 "       the live game and WILL freeze it. Close the game first, then re-run "
+                 "(or pass --force if you know what you're doing).")
     print(f"baking '{name}' -> {target}\n")
 
     work = Path(tempfile.mkdtemp(prefix="openwrath-bake-"))
@@ -397,6 +416,8 @@ def cmd_mod_revert(args) -> int:
     import shutil
     cfg = read_config()
     (mods,) = _need(cfg, "mods_dir")
+    if game_running() and not args.force:
+        sys.exit("error: Kane's Wrath appears to be RUNNING — close it before reverting (or --force).")
     big = Path(mods) / args.target / "ada_1_Streams.big"
     backup = big.with_suffix(".big.openwrath-backup")
     if not backup.exists():
@@ -414,9 +435,11 @@ def main() -> int:
     mod = sub.add_parser("mod", help="build/manage mods").add_subparsers(dest="mcmd", required=True)
     b = mod.add_parser("bake", help="compile a mod's overrides + splice them into its target stream")
     b.add_argument("project", help="path to the mod project dir (contains mod.toml)")
+    b.add_argument("--force", action="store_true", help="bake even if the game appears to be running")
     b.set_defaults(func=cmd_mod_bake)
     r = mod.add_parser("revert", help="restore a target mod's big from the last openwrath backup")
     r.add_argument("target", help="target mod name (e.g. SecondIsomer)")
+    r.add_argument("--force", action="store_true", help="revert even if the game appears to be running")
     r.set_defaults(func=cmd_mod_revert)
     args = ap.parse_args()
     if args.cmd == "detect":
