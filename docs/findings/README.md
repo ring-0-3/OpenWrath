@@ -33,6 +33,8 @@ truth), **Evidence** (how we know), **How to apply** (what to do about it), and 
 | [0006](0006-new-assets-need-stream-insert.md) | A mod can *add* a brand-new asset to a stream (not just replace one) via append-only manifest insert | Verified |
 | [0007](0007-big-repack-must-be-fsynced-and-verified.md) | A big repack must be fsynced + integrity-verified before install, or a truncated archive ships silently | Verified |
 | [0008](0008-xinclude-xpointer-not-honored.md) | **Compiler bug (FIXED):** `xi:include` xpointer wasn't honored (custom `ResolveXIncludes` ignored it, not Mvp.Xml) — fixed to splice only the selected node-set; GDICommando now round-trips byte-exact | Fixed |
+| [0009](0009-decompiler-logiccommand-instance-read-desync.md) | **Decompiler desync = schema drift (RESOLVED):** `inspect` can't read `LogicCommand` because it's a *layout-drifted* type in SI; our retail-schema reader desyncs to `RawAsset`. Non-drifted types read fine from the same stream. Subsumed by 0010 | Resolved |
+| [0010](0010-insert-must-match-target-stream-type-schema-hash.md) | **Schema drift (crash + tooling):** SI diverged from retail on **12 types**; INSERTing a new asset of a drifted type crashes on load. Built `openwrath schema`, a bake-time drift guard, and `--adopt-schema`. Drift is *hash-only* (adopt-safe) or *layout* (unsafe — e.g. `ObjectCreationList`); decompiler read success is the discriminator | Verified + tooled |
 
 **See also:** the GameObject byte-exact breakthrough — one schema-default field the compiler wrote into former
 alignment padding (`SetAnimsToLastFrameOnConstructionComplete`) — is documented in

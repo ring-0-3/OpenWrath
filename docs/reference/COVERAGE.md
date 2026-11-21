@@ -117,6 +117,14 @@ Types the decompiler encounters in shipped streams but the compiler does **not**
 families. The decompiler labels these rather than crashing, but they cannot round-trip. The art / W3D / texture
 / audio-file families belong to the planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`.
 
+## Known decompiler (read-direction) limitations
+
+- **`LogicCommand` instance data isn't recovered on read.** `openwrath inspect`/the decompiler desync on every
+  `LogicCommand` instance (`len 24 past instance end (0)`) and fall back to a labeled `<RawAsset>` — the
+  anti-crash desync guard works, but the fields aren't rendered. This is **read-direction only**: the
+  compile/roundtrip `LogicCommand` row above (byte-exact on `Command_ActivateAdaptiveArmor`) is unaffected. See
+  `../findings/0009-decompiler-logiccommand-instance-read-desync.md` for the H1/H2 discriminator and fix plan.
+
 ## Known compiler limitations
 
 - ~~`xi:include` xpointer is not honored~~ — **FIXED 2026-11-21** (`../findings/0008-xinclude-xpointer-not-honored.md`).
