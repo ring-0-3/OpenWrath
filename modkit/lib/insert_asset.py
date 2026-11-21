@@ -19,13 +19,25 @@
 #   buffer is left untouched (a referenced asset is resolved globally across the loaded manifest set).
 #
 # usage: insert_asset.py <stream_dir> <new.asset> <new_manifest> <out_dir> <stream_name> [source_label]
+#        [--type-hash HEX]
+# --type-hash: write this TypeHash into the new entry instead of the compiled asset's own. Used to ADOPT a
+#   target stream's schema fingerprint when it drifted from our compiler's for this type (the engine demands
+#   one hash per type across a stream; see docs/findings/0010). Sound only if the on-disk layout is identical
+#   and solely the fingerprint drifted — the caller (`openwrath mod bake --adopt-schema`) is responsible for
+#   that judgement and for in-game verification.
 import struct, sys, os
 
 def rd(p): return open(p, 'rb').read()
 
 def main():
-    stream_dir, new_asset, new_mf, out_dir, stream = sys.argv[1:6]
-    source_label = sys.argv[6] if len(sys.argv) > 6 else None
+    argv = sys.argv[1:]
+    type_hash_override = None
+    if "--type-hash" in argv:
+        i = argv.index("--type-hash")
+        type_hash_override = int(argv[i + 1], 16) & 0xffffffff
+        del argv[i:i + 2]
+    stream_dir, new_asset, new_mf, out_dir, stream = argv[0:5]
+    source_label = argv[5] if len(argv) > 5 else None
     os.makedirs(out_dir, exist_ok=True)
 
     man = bytearray(rd(os.path.join(stream_dir, f'{stream}.manifest')))
@@ -95,7 +107,11 @@ def main():
           f'inst/relo/imp/refs={aids}/{ards}/{aimps}/{nrc}  src="{src_bytes.decode("latin1")}"')
 
     # --- build the new entry (appended last; every offset points at the END of its buffer) ---
-    new_entry = [at, ai, ath, aih,
+    entry_th = type_hash_override if type_hash_override is not None else ath
+    if type_hash_override is not None and type_hash_override != ath:
+        print(f'  adopting stream TypeHash 0x{entry_th:08x} for type 0x{at:08x} '
+              f'(compiler emitted 0x{ath:08x})')
+    new_entry = [at, ai, entry_th, aih,
                  arsz,          # AssetReferenceOffset = current end of AssetRefBuf
                  nrc,           # AssetReferenceCount
                  ansz,          # NameOffset = current end of AssetNameBuf

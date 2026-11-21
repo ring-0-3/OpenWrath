@@ -513,6 +513,45 @@ def cmd_mod_bake(args) -> int:
         cur.mkdir()
         subprocess.run(["python3", str(LIB / "bigextract.py"), str(big), f"{stream}.", str(cur)],
                        capture_output=True)
+
+        # SCHEMA-DRIFT GUARD (docs/findings/0010). Every asset entry carries a TypeHash = schema fingerprint;
+        # the engine requires ONE per type across a stream. REPLACE is immune (splice keeps the stream's hash),
+        # but an INSERT writes a NEW entry with OUR compiler's hash — and if the target stream diverged on that
+        # type (built against a different schema version), the engine rejects the whole stream on LOAD. That is
+        # a structurally-complete big that still crashes, so big_is_complete can't catch it: we must here.
+        # Default = refuse with a precise message. With --adopt-schema, stamp the stream's hash instead (only
+        # sound if the on-disk layout is identical and only the fingerprint drifted — verify in-game).
+        adopt_th = {}  # tid -> stream's TypeHash, for inserts we are allowed to adopt
+        if insert:
+            stream_th = {}
+            for e in parse_manifest(str(cur / f"{stream}.manifest")):
+                stream_th.setdefault(e["tid"], e["th"])
+            drifted = []
+            for tid, iid, af, mf in insert:
+                ins_th = int(af.name.split(".")[1], 16)   # asset filename = tid.th.iid.ih.asset
+                exp = stream_th.get(tid)
+                if exp is not None and exp != ins_th:
+                    drifted.append((tid, iid, exp, ins_th))
+            if drifted:
+                detail = "\n".join(
+                    f"       type 0x{t:08x}: stream uses 0x{e:08x}, compiler emits 0x{i:08x} "
+                    f"(new asset 0x{ii:08x})" for (t, ii, e, i) in drifted)
+                if not args.adopt_schema:
+                    sys.exit(
+                        "error: schema drift on INSERT — refusing (the game would reject the stream on load).\n"
+                        + detail +
+                        "\n       The target stream was built against a different schema version for these "
+                        "type(s).\n       Inspect with:  openwrath schema --drift-only\n"
+                        "       REPLACE is always safe. To INSERT anyway by adopting the stream's hash "
+                        "(then verify\n       in-game), re-run with --adopt-schema.  "
+                        "See docs/findings/0010-insert-must-match-target-stream-type-schema-hash.md")
+                for (t, ii, e, i) in drifted:
+                    adopt_th[t] = e
+                print(f"  --adopt-schema: {len(drifted)} inserted asset(s) will adopt the stream's TypeHash "
+                      f"(UNVERIFIED — test in-game):")
+                for (t, ii, e, i) in drifted:
+                    print(f"      0x{t:08x}: 0x{i:08x} -> 0x{e:08x}")
+
         step = 0
         for tid, iid, af, mf in replace:
             nxt = work / f"op{step}"; step += 1
@@ -524,9 +563,11 @@ def cmd_mod_bake(args) -> int:
             cur = nxt
         for tid, iid, af, mf in insert:
             nxt = work / f"op{step}"; step += 1
-            r = subprocess.run(["python3", str(LIB / "insert_asset.py"), str(cur), str(af),
-                                str(mf), str(nxt), stream, f"openwrath:{name}"],
-                               capture_output=True, text=True)
+            cmd = ["python3", str(LIB / "insert_asset.py"), str(cur), str(af),
+                   str(mf), str(nxt), stream, f"openwrath:{name}"]
+            if tid in adopt_th:                       # adopt the stream's schema hash for this drifted type
+                cmd += ["--type-hash", f"{adopt_th[tid]:08x}"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
             if not (nxt / f"{stream}.manifest").exists():
                 sys.exit(f"error: insert failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
             cur = nxt
@@ -606,6 +647,31 @@ def _resolve_target_big(cfg: dict, target: str | None) -> tuple[Path, str]:
         sys.exit(f"error: no installed mod with an ada_1_Streams.big under {mods}")
     sys.exit("error: multiple installed mods — pass --target <name>: "
              + ", ".join(d.name for d in cands))
+
+
+def our_type_hashes(cfg: dict) -> dict:
+    """Parse the compiler's native type registry (XmlCompiler/Plugin.cs) into {TypeName: TypeHash}.
+
+    This is the schema fingerprint OUR compiler stamps for each type — the retail Kane's Wrath hash. A mod
+    stream built against a different schema version will carry a DIFFERENT hash for the same type (schema
+    drift); comparing against this map is how `openwrath schema` flags those. Returns {} if Plugin.cs is
+    missing. Handles both the plain `(typeof(X), 0xHASHu, ...)` entries and the
+    `#if TIBERIUMWARS / #elif KANESWRATH / #endif` conditional ones (we keep the KANESWRATH branch — KW is
+    the build target), and namespaced names (`SageBinaryData.Environment` -> `Environment`)."""
+    import re
+    (ow,) = _need(cfg, "openwrath")
+    plugin = Path(ow) / "source/BinaryAssetBuilder.XmlCompiler/BinaryAssetBuilder/XmlCompiler/Plugin.cs"
+    if not plugin.exists():
+        vlog(f"Plugin.cs not found at {plugin} — drift column unavailable")
+        return {}
+    txt = plugin.read_text()
+    # Drop the TIBERIUMWARS branch of each conditional so only the KANESWRATH hash remains before the entry.
+    txt = re.sub(r"#if\s+TIBERIUMWARS.*?#elif\s+KANESWRATH", "", txt, flags=re.S).replace("#endif", "")
+    out = {}
+    for m in re.finditer(r"typeof\(([\w.]+)\)\s*,\s*0x([0-9A-Fa-f]+)u", txt):
+        out[m.group(1).split(".")[-1]] = int(m.group(2), 16)
+    vlog(f"parsed {len(out)} native type hashes from Plugin.cs")
+    return out
 
 
 def _extract(big: Path, needle: str, outdir: Path) -> None:
@@ -971,6 +1037,73 @@ def cmd_verify(args) -> int:
             shutil.rmtree(cdir, ignore_errors=True)
 
 
+def cmd_schema(args) -> int:
+    """Show a stream's per-type SCHEMA fingerprints, and where they DRIFT from our compiler.
+
+    Every asset entry carries a TypeHash — a fingerprint of that type's schema. The engine requires one
+    fingerprint per type across a stream, so a mod stream built against a different schema version than
+    retail (what our byte-exact compiler targets) carries a different hash for that type. INSERTing a new
+    asset of a drifted type crashes the game on load (docs/findings/0010); REPLACE is immune (it keeps the
+    stream's existing hash). This command makes that visible: for each type in the stream it prints the
+    stream's hash, our compiler's native hash, and a status — so you can SEE the schema before adapting."""
+    from collections import defaultdict
+    cfg = read_config()
+    idx = load_stream_index(cfg, args.target, args.stream)
+    ours = our_type_hashes(cfg)
+
+    groups = defaultdict(lambda: {"tid": None, "hashes": set(), "count": 0})
+    for e in idx["entries"]:
+        typ = e["type"] or f"0x{e['tid']:08x}"
+        g = groups[typ]
+        g["tid"] = e["tid"]
+        g["hashes"].add(e["th"])
+        g["count"] += 1
+
+    want = (args.type or "").lower()
+    rows = []
+    for typ in sorted(groups):
+        if want and want not in typ.lower():
+            continue
+        g = groups[typ]
+        sh = sorted(g["hashes"])
+        our_h = ours.get(typ)
+        if len(sh) > 1:
+            status = "MIXED"              # stream itself carries >1 hash for this type (unexpected)
+        elif our_h is None:
+            status = "unregistered"       # our compiler has no native hash for this type
+        elif our_h == sh[0]:
+            status = "match"
+        else:
+            status = "DRIFT"
+        if args.drift_only and status not in ("DRIFT", "MIXED"):
+            continue
+        rows.append((typ, g["tid"], sh, our_h, status, g["count"]))
+
+    if not rows:
+        print("(no matching types)" if (want or args.drift_only) else "(stream is empty)")
+        return 0
+
+    # table
+    tw = max(len(r[0]) for r in rows)
+    print(f"stream '{idx['stream']}' of {idx['target']}  —  {len(rows)} type(s)"
+          + (" with drift" if args.drift_only else "") + "\n")
+    print(f"  {'TYPE'.ljust(tw)}  {'TYPEID':10}  {'STREAM HASH':12}  {'OUR HASH':12}  STATUS   COUNT")
+    print(f"  {'-'*tw}  {'-'*10}  {'-'*12}  {'-'*12}  -------  -----")
+    drift_n = 0
+    for typ, tid, sh, our_h, status, count in rows:
+        if status in ("DRIFT", "MIXED"):
+            drift_n += 1
+        shs = "/".join(f"0x{h:08x}" for h in sh)
+        ohs = f"0x{our_h:08x}" if our_h is not None else "—"
+        print(f"  {typ.ljust(tw)}  0x{tid:08x}  {shs:12}  {ohs:12}  {status:7}  {count}")
+
+    if not args.drift_only and drift_n:
+        print(f"\n  {drift_n} type(s) DRIFT from our compiler. Inserting a NEW asset of a drifted type will"
+              f"\n  crash on load unless the insert adopts the stream's hash. REPLACE is always safe."
+              f"\n  See docs/findings/0010-insert-must-match-target-stream-type-schema-hash.md")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
     # Global -v/--verbose, accepted either before OR after the subcommand. The shared copy uses
@@ -991,6 +1124,10 @@ def main() -> int:
                        help="compile a mod's overrides + splice them into its target stream")
     b.add_argument("project", help="path to the mod project dir (contains mod.toml)")
     b.add_argument("--force", action="store_true", help="bake even if the game appears to be running")
+    b.add_argument("--adopt-schema", dest="adopt_schema", action="store_true",
+                   help="INSERT a new asset of a drifted type by stamping the target stream's schema hash "
+                        "for that type (instead of our compiler's). Needed to add assets of types the target "
+                        "mod diverged on; verify in-game after. Without this, drift aborts the bake.")
     b.set_defaults(func=cmd_mod_bake)
     r = mod.add_parser("revert", parents=[common],
                        help="restore a target mod's big from the last openwrath backup")
@@ -1022,6 +1159,10 @@ def main() -> int:
     tr.add_argument("asset", help="instance name, e.g. NODAvatar")
     tr.add_argument("--depth", type=int, default=3, help="how deep to walk (default 3)")
     tr.set_defaults(func=cmd_trace)
+    sc = _disc("schema", "show a stream's per-type schema hashes + where they DRIFT from our compiler")
+    sc.add_argument("--drift-only", dest="drift_only", action="store_true",
+                    help="show only types whose hash differs from our compiler (the insert-unsafe ones)")
+    sc.set_defaults(func=cmd_schema)
 
     ver = sub.add_parser("verify", parents=[common],
                          help="byte-exact check of an asset against the GAME'S OWN shipped bytes")

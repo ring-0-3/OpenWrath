@@ -41,5 +41,11 @@ See `config.example.toml` for the full schema.
       auto-backup, install. The repack is fsynced and the installed big is integrity-verified, with
       auto-rollback from backup if anything is off (`docs/findings/0007`). Wraps the whole hand-run pipeline.
 - [x] `mod revert` — restore a target's big from the last openwrath backup (backup + result both verified).
+- [x] `schema` — show a stream's per-type schema fingerprints (TypeHash) and where they **drift** from our
+      compiler. A mod stream built against a different schema version carries a different hash for a type;
+      INSERTing a new asset of such a type crashes on load, so `mod bake` now **guards** inserts against drift
+      (clean abort, nothing installed) and offers `--adopt-schema` to stamp the stream's hash where the drift is
+      hash-only. Drift that also changes layout can't be authored with our retail schema. See
+      `docs/findings/0010`.
 - [ ] `trace` — walk a unit → weapons → projectiles → effects so you know *what asset to mod*.
 - [ ] `stringhashes` — (re)generate the master StringHashes table from your own SDK.
