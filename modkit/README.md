@@ -35,8 +35,11 @@ See `config.example.toml` for the full schema.
 ## Status / roadmap
 
 - [x] `detect` / `show` — environment discovery + config
-- [x] `mod bake` — compile a mod's XML overrides and splice them into a target stream (base game or
-      an existing mod), repack the big, auto-backup, install. Wraps the whole hand-run pipeline.
-- [x] `mod revert` — restore a target's big from the last openwrath backup.
+- [x] `mod bake` — compile a mod's XML overrides and apply them to a target stream (base game or an existing
+      mod): assets already in the stream are **replaced** (splice), brand-new assets are **inserted**
+      (append-only, existing assets stay byte-identical — see `docs/findings/0006`), then repack the big,
+      auto-backup, install. The repack is fsynced and the installed big is integrity-verified, with
+      auto-rollback from backup if anything is off (`docs/findings/0007`). Wraps the whole hand-run pipeline.
+- [x] `mod revert` — restore a target's big from the last openwrath backup (backup + result both verified).
 - [ ] `trace` — walk a unit → weapons → projectiles → effects so you know *what asset to mod*.
 - [ ] `stringhashes` — (re)generate the master StringHashes table from your own SDK.

@@ -97,6 +97,15 @@ def main():
                     written += len(b)
                     remaining -= len(b)
         assert written == total, (written, total)
+        # Durability: flush every byte to disk before we claim success, so a caller can never install a
+        # partially-flushed (truncated) archive. (A past truncation shipped a half-written big because the
+        # bytes were only in the page cache when the next step copied it.)
+        fout.flush()
+        os.fsync(fout.fileno())
+
+    actual = os.path.getsize(out)
+    if actual != total:
+        raise SystemExit(f"ERROR: output big is {actual} bytes but should be {total} — refusing (truncated write)")
 
     print(f"wrote {out}")
     print(f"  entries={num} header_size={header_size} total={total} (orig_total patched)")

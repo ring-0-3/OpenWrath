@@ -14,15 +14,30 @@ Design rules (hard):
     so there is nothing to gitignore and no path ever lands in version control.
 
 Subcommands:
-  detect   auto-discover this machine's KW install / prefix / mods / SDK and write the config
-  show     print the resolved config and flag anything missing
-  (bake, trace — coming next)
+  detect        auto-discover this machine's KW install / prefix / mods / SDK and write the config
+  show          print the resolved config and flag anything missing
+  mod bake      compile a mod's overrides + splice/insert them into a target stream, repack, install
+  mod revert    restore a target mod's big from the last openwrath backup
+  inspect <a>   decompile + print ONE asset from the installed stream (what the game actually loads)
+  find <text>   list installed assets whose name contains <text> (optionally --type)
+  uses <a>      list assets that REFERENCE <a> (reverse refs — spot shared templates before editing)
+  trace <a>     print <a>'s outgoing reference tree (unit -> weapons -> projectiles -> fx -> ...)
 """
 import argparse
 import os
 import re
 import sys
 from pathlib import Path
+
+# --- verbosity ---------------------------------------------------------------------------
+# Diagnostics (resolved paths, cache hit/miss, timings, counts) go to STDERR and only when
+# --verbose is set, so default stdout stays clean and pipeable.
+_VERBOSE = False
+
+
+def vlog(msg: str) -> None:
+    if _VERBOSE:
+        print(msg, file=sys.stderr)
 
 # --- Game facts (NOT user paths; constants about Kane's Wrath itself) --------------------
 APPID = "24810"
@@ -269,11 +284,79 @@ def game_running() -> bool:
     return any(ln.strip() and not any(o in ln for o in ours) for ln in r.stdout.splitlines())
 
 
+def _dotnet_env() -> dict:
+    """Environment for invoking the .NET toolchain (BAB / bab-decompile / roundtrip.sh).
+
+    Ensures the per-user profile bin (where `dotnet` lives) is on PATH and the roll-forward
+    knobs are set, without baking a personal path: the per-user profile dir is a NixOS fact,
+    added only if present so this stays a no-op elsewhere."""
+    env = dict(os.environ, DOTNET_ROLL_FORWARD="LatestMajor",
+               DOTNET_ROLL_FORWARD_TO_PRERELEASE="1",
+               DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
+    peruser = f"/etc/profiles/per-user/{os.environ.get('USER', '')}/bin"
+    if os.path.isdir(peruser) and peruser not in env.get("PATH", "").split(os.pathsep):
+        env["PATH"] = peruser + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _run(cmd: list[str], **kw):
     import subprocess
-    env = dict(os.environ, DOTNET_ROLL_FORWARD="LatestMajor",
-               DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
-    return subprocess.run(cmd, env=env, **kw)
+    return subprocess.run(cmd, env=_dotnet_env(), **kw)
+
+
+# --- session cache for extracted streams -------------------------------------------------
+# Extracting a full stream (manifest + the big .bin/.relo/.imp) from a BIG is slow, so cache
+# the extracted files per (big, stream) under $XDG_CACHE_HOME/openwrath, keyed on the big's
+# mtime+size. If the big changes (mtime or size differs) the signature changes and we extract
+# afresh — correctness first. inspect/verify use this; find/uses/trace keep their fast
+# manifest-only extraction.
+def _cache_root() -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "openwrath"
+
+
+def _big_sig(big: Path) -> str:
+    st = big.stat()
+    return f"{st.st_mtime_ns}-{st.st_size}"
+
+
+_STREAM_EXTS = ("manifest", "bin", "relo", "imp")
+
+
+def ensure_stream_cache(big: Path, stream: str, label: str,
+                        no_cache: bool = False) -> tuple[Path, bool]:
+    """Return (dir containing <stream>.{manifest,bin,relo,imp}, cache_hit).
+
+    With no_cache, extract to a throwaway temp dir (caller may leave it; it lands in the OS
+    temp). Otherwise populate a stable per-(big,stream,signature) cache dir and reuse it when a
+    completion marker proves a prior extraction finished for this exact big."""
+    import tempfile, time
+    if no_cache:
+        d = Path(tempfile.mkdtemp(prefix="openwrath-nocache-"))
+        t0 = time.time()
+        _extract(big, f"{stream}.", d)
+        vlog(f"  extract (no-cache) {stream} from {big} -> {d}  ({time.time()-t0:.2f}s)")
+        return d, False
+
+    sig = _big_sig(big)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label) or "target"
+    d = _cache_root() / f"{safe}-{stream}-{sig}"
+    marker = d / ".complete"
+    man = d / f"{stream}.manifest"
+    if marker.exists() and man.exists() and man.stat().st_size > 0:
+        vlog(f"  stream cache HIT: {d}")
+        return d, True
+
+    vlog(f"  stream cache MISS: {d}")
+    d.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    _extract(big, f"{stream}.", d)
+    if not man.exists() or man.stat().st_size == 0:
+        sys.exit(f"error: could not extract stream '{stream}' from {big.name} "
+                 f"(no {stream}.manifest produced).")
+    marker.write_text(sig, encoding="utf-8")
+    vlog(f"  extracted {stream} from {big} -> {d}  ({time.time()-t0:.2f}s)")
+    return d, False
 
 
 def compile_source(cfg: dict, source: Path, outdir: Path) -> tuple[Path, Path]:
@@ -294,12 +377,44 @@ def compile_source(cfg: dict, source: Path, outdir: Path) -> tuple[Path, Path]:
     return mf, mf.with_suffix("") / "assets"
 
 
-def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
-                               stream_opt: str | None) -> tuple[Path, str]:
-    """Resolve the .big to patch and which linked stream inside it holds the override ids.
+def big_is_complete(path) -> bool:
+    """A BIG4 archive is complete iff no file-table entry's data extends past the physical file.
+    Cheap structural check (reads only the header/table) that catches a truncated or short-written big
+    before it is installed or trusted."""
+    import struct
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if f.read(4) != b"BIG4":
+                return False
+            f.seek(8)
+            count, _firstoff = struct.unpack(">II", f.read(8))
+            max_end = 0
+            for _ in range(count):
+                off, sz = struct.unpack(">II", f.read(8))
+                name = b""
+                while not name.endswith(b"\x00"):
+                    ch = f.read(1)
+                    if not ch:
+                        return False
+                    name += ch
+                max_end = max(max_end, off + sz)
+        return max_end <= size
+    except Exception:
+        return False
 
-    If mod.toml pins `stream`, use it (after confirming it carries the ids). Otherwise pick the
-    stream that contains ALL the override ids (and, among candidates, prefer that over a partial).
+
+def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
+                               stream_opt: str | None) -> tuple[Path, str, set[int]]:
+    """Resolve the .big to patch, which linked stream to use, and that stream's existing instance ids.
+
+    Returns (big, stream, stream_iids). The caller splits override ids by membership in stream_iids:
+    ids already present are REPLACED (splice), ids not present are ADDED (insert) — so a mod can ship
+    brand-new assets, not only tweak existing ones.
+
+    If mod.toml pins `stream`, use it (new ids are fine — they get inserted). Otherwise pick the stream
+    that already holds the most of the override ids; if some ids are new, the stream must be pinned so we
+    know where to add them.
     """
     import subprocess, tempfile
     if target.lower() == "base":
@@ -316,23 +431,29 @@ def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
             return {e["iid"] for e in parse_manifest(str(mp))} if mp.exists() else set()
 
     if stream_opt:
-        if not override_iids <= iids_of(stream_opt):
-            sys.exit(f"error: stream '{stream_opt}' in {big.name} is missing some override ids.")
-        return big, stream_opt
+        got = iids_of(stream_opt)
+        if not got:
+            sys.exit(f"error: stream '{stream_opt}' not found in {big.name}.")
+        return big, stream_opt, got
 
     listing = subprocess.run(["python3", str(LIB / "biglist.py"), str(big), "manifest"],
                              capture_output=True, text=True).stdout
     streams = sorted({re.search(r"data.(\w+)\.manifest", ln).group(1)
                       for ln in listing.splitlines() if ".manifest" in ln and "cdata" not in ln})
-    partial = None
+    best = None  # (overlap_count, stream, iids)
     for st in streams:
         got = iids_of(st)
         if override_iids <= got:
-            return big, st                      # contains ALL ids -> definitive
-        if override_iids & got and partial is None:
-            partial = st
-    if partial:
-        return big, partial
+            return big, st, got                 # contains ALL ids -> definitive
+        overlap = len(override_iids & got)
+        if overlap and (best is None or overlap > best[0]):
+            best = (overlap, st, got)
+    if best:
+        _, st, got = best
+        if not override_iids <= got:
+            sys.exit(f"error: some override ids are NEW (not in any single stream). Pin the target stream in\n"
+                     f"       mod.toml ([mod] stream = \"{st}\") so openwrath knows where to insert them.")
+        return big, st, got
     sys.exit(f"error: none of {big.name}'s streams contain the override ids — is the target right?")
 
 
@@ -374,38 +495,67 @@ def cmd_mod_bake(args) -> int:
         if not to_splice:
             sys.exit("error: none of the declared overrides compiled to an asset.")
 
-        # 2. resolve target big + the stream holding these ids
-        big, stream = find_target_big_and_stream(cfg, target, all_iids, spec.get("stream"))
-        print(f"  target: {big.name}  stream: {stream}  ({len(to_splice)} assets)")
+        # 2. resolve target big + the stream, and split overrides into replace (id present) vs insert (new)
+        big, stream, stream_iids = find_target_big_and_stream(cfg, target, all_iids, spec.get("stream"))
+        # Never bake FROM a corrupt base: a truncated source big would silently yield garbage overrides.
+        if not big_is_complete(big):
+            backup = big.with_suffix(".big.openwrath-backup")
+            hint = (f" Restore it first: openwrath mod revert {target}" if backup.exists()
+                    else " No backup found — reinstall the target mod.")
+            sys.exit(f"error: the installed {big.name} is truncated/corrupt — refusing to bake from it.{hint}")
+        replace = [(t, i, af, mf) for (t, i, af, mf) in to_splice if i in stream_iids]
+        insert = [(t, i, af, mf) for (t, i, af, mf) in to_splice if i not in stream_iids]
+        summary = f"{len(replace)} replaced" + (f", {len(insert)} new (inserted)" if insert else "")
+        print(f"  target: {big.name}  stream: {stream}  ({summary})")
 
-        # 3. extract that stream, splice each override into it (chained)
+        # 3. extract that stream, then apply each override (chained): splice existing, insert new.
         cur = work / "extract"
         cur.mkdir()
         subprocess.run(["python3", str(LIB / "bigextract.py"), str(big), f"{stream}.", str(cur)],
                        capture_output=True)
-        for i, (tid, iid, af, mf) in enumerate(to_splice):
-            nxt = work / f"splice{i}"
+        step = 0
+        for tid, iid, af, mf in replace:
+            nxt = work / f"op{step}"; step += 1
             r = subprocess.run(["python3", str(LIB / "splice_asset.py"), str(cur), str(af),
                                 str(mf), str(nxt), f"{tid:08x}", f"{iid:08x}"],
                                capture_output=True, text=True)
             if not (nxt / f"{stream}.manifest").exists():
                 sys.exit(f"error: splice failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
             cur = nxt
+        for tid, iid, af, mf in insert:
+            nxt = work / f"op{step}"; step += 1
+            r = subprocess.run(["python3", str(LIB / "insert_asset.py"), str(cur), str(af),
+                                str(mf), str(nxt), stream, f"openwrath:{name}"],
+                               capture_output=True, text=True)
+            if not (nxt / f"{stream}.manifest").exists():
+                sys.exit(f"error: insert failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
+            cur = nxt
 
-        # 4. repack a new big, back up the live one, install
+        # 4. repack a new big, verify it is complete, back up the live one, install, re-verify, else roll back.
         newbig = work / "patched.big"
-        parts = " ".join(f'data\\{stream}.{ext}={cur}/{stream}.{ext}' for ext in
-                         ("manifest", "bin", "relo", "imp"))
-        subprocess.run(["python3", str(LIB / "big_replace.py"), str(big), str(newbig),
-                        *[f"data\\{stream}.{ext}={cur}/{stream}.{ext}"
-                          for ext in ("manifest", "bin", "relo", "imp")]], capture_output=True)
-        if not newbig.exists():
-            sys.exit("error: repack produced no big.")
+        r = subprocess.run(["python3", str(LIB / "big_replace.py"), str(big), str(newbig),
+                            *[f"data\\{stream}.{ext}={cur}/{stream}.{ext}"
+                              for ext in ("manifest", "bin", "relo", "imp")]],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or not newbig.exists():
+            sys.exit(f"error: repack failed (exit {r.returncode}):\n{r.stdout}{r.stderr}")
+        # A BIG4 is complete iff no entry's data extends past the file. This catches a truncated/short
+        # repack BEFORE it can overwrite the installed archive.
+        if not big_is_complete(newbig):
+            sys.exit(f"error: repacked big is truncated/corrupt — refusing to install.\n{r.stdout}{r.stderr}")
+
         backup = big.with_suffix(".big.openwrath-backup")
         if not backup.exists():
             shutil.copy2(big, backup)
+        # Install, then fsync + re-verify what actually landed on disk; roll back from backup on any problem.
         shutil.copy2(newbig, big)
-        print(f"\n  ✓ baked. backup: {backup.name}")
+        with open(big, "rb") as fh:
+            os.fsync(fh.fileno())
+        if not big_is_complete(big):
+            shutil.copy2(backup, big)
+            sys.exit("error: installed big failed its integrity check — ROLLED BACK from backup. "
+                     "Nothing was changed; please retry.")
+        print(f"\n  ✓ baked + verified intact. backup: {backup.name}")
         print(f"  revert anytime: openwrath mod revert {target}")
         return 0
     finally:
@@ -422,26 +572,469 @@ def cmd_mod_revert(args) -> int:
     backup = big.with_suffix(".big.openwrath-backup")
     if not backup.exists():
         sys.exit(f"error: no openwrath backup for {args.target} ({backup.name} missing).")
+    if not big_is_complete(backup):
+        sys.exit(f"error: the backup {backup.name} is itself truncated/corrupt — NOT restoring "
+                 "(that would make things worse). The target mod likely needs a reinstall.")
     shutil.copy2(backup, big)
-    print(f"reverted {args.target} to the pre-bake backup.")
+    with open(big, "rb") as fh:
+        os.fsync(fh.fileno())
+    if not big_is_complete(big):
+        sys.exit("error: restore produced an incomplete big — disk problem? Re-run after freeing space.")
+    print(f"reverted {args.target} to the pre-bake backup (verified intact).")
     return 0
+
+
+# --- discovery: inspect / find / uses / trace --------------------------------------------
+# These read the INSTALLED stream (what the game actually loads), so modders can explore the
+# data graph instead of needing tribal knowledge of where everything lives. All are driven by
+# a shared manifest index built from the target mod's big.
+
+def _resolve_target_big(cfg: dict, target: str | None) -> tuple[Path, str]:
+    """Return (ada_1_Streams.big path, target name). If target is None, auto-detect the sole
+    installed mod; error (listing candidates) if there are zero or many."""
+    (mods,) = _need(cfg, "mods_dir")
+    mods = Path(mods)
+    if target:
+        big = mods / target / "ada_1_Streams.big"
+        if not big.exists():
+            sys.exit(f"error: no ada_1_Streams.big for target '{target}' at {big}")
+        return big, target
+    cands = [d for d in sorted(mods.iterdir()) if d.is_dir() and (d / "ada_1_Streams.big").exists()]
+    if len(cands) == 1:
+        return cands[0] / "ada_1_Streams.big", cands[0].name
+    if not cands:
+        sys.exit(f"error: no installed mod with an ada_1_Streams.big under {mods}")
+    sys.exit("error: multiple installed mods — pass --target <name>: "
+             + ", ".join(d.name for d in cands))
+
+
+def _extract(big: Path, needle: str, outdir: Path) -> None:
+    import subprocess
+    subprocess.run(["python3", str(LIB / "bigextract.py"), str(big), needle, str(outdir)],
+                   capture_output=True)
+
+
+def load_stream_index(cfg: dict, target: str | None, stream: str) -> dict:
+    """Extract the stream's manifest (only — fast) and build an index of every asset:
+    full name ('Type:Instance'), split type/inst, and outgoing (tid,iid) references.
+    Returns {entries, by_iid, by_name, big, target, stream}."""
+    import struct, tempfile, shutil, time
+    big, target = _resolve_target_big(cfg, target)
+    vlog(f"target: {target}  big: {big}  stream: {stream}")
+    td = Path(tempfile.mkdtemp(prefix="openwrath-idx-"))
+    t0 = time.time()
+    try:
+        _extract(big, f"{stream}.manifest", td)
+        mp = td / f"{stream}.manifest"
+        if not mp.exists() or mp.stat().st_size == 0:
+            sys.exit(f"error: stream '{stream}' not found in {big.name} (extract empty). "
+                     f"Streams live as data\\<stream>.manifest inside the big.")
+        b = mp.read_bytes()
+        h = struct.unpack_from("<11I", b, 4)
+        n, arsz, rmsz = h[2], h[7], h[8]
+        refbuf_start = MANIFEST_V5_HDR + n * MANIFEST_ENTRY       # AssetRefBuf begins after the entry table
+        name_base = refbuf_start + arsz + rmsz                    # AssetNameBuf begins after ref + refManName bufs
+        entries, by_iid, by_name = [], {}, {}
+        for i in range(n):
+            o = MANIFEST_V5_HDR + i * MANIFEST_ENTRY
+            tid, iid, th, ih = struct.unpack_from("<4I", b, o)
+            aro, arc = struct.unpack_from("<2i", b, o + 16)       # AssetReferenceOffset (bytes), Count
+            noff = struct.unpack_from("<i", b, o + 24)[0]
+            name = None
+            if noff >= 0:
+                p = name_base + noff
+                name = b[p:b.index(b"\x00", p)].decode("latin1", "replace")
+            if name and ":" in name:
+                typ, inst = name.split(":", 1)
+            else:
+                typ, inst = None, name
+            refs = []
+            base = refbuf_start + aro
+            for j in range(arc):
+                rt, ri = struct.unpack_from("<2I", b, base + j * 8)  # each ref = (TypeId, InstanceId)
+                refs.append((rt, ri))
+            e = {"tid": tid, "iid": iid, "th": th, "ih": ih,
+                 "name": name, "type": typ, "inst": inst, "refs": refs}
+            entries.append(e)
+            by_iid[iid] = e
+            if inst:
+                by_name.setdefault(inst.lower(), []).append(e)
+        vlog(f"indexed {len(entries)} assets from {stream}.manifest  ({time.time()-t0:.2f}s)")
+        return {"entries": entries, "by_iid": by_iid, "by_name": by_name,
+                "big": big, "target": target, "stream": stream}
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _resolve_asset(idx: dict, asset: str, want_type: str | None = None) -> list[dict]:
+    """Resolve an instance name to its entries. Prefers an EXACT-case match (so 'NODAvatar' picks
+    GameObject:NODAvatar, not a case-variant like OnDemandTextureImage:NodAvatar); falls back to the
+    case-insensitive set only when there is no exact-case hit. When want_type is given, restricts
+    to assets of that type (so `--type GameObject` disambiguates a name shared across types)."""
+    hits = idx["by_name"].get(asset.lower())
+    if not hits:
+        sys.exit(f"error: '{asset}' not found in stream '{idx['stream']}' of {idx['target']}. "
+                 f"Try: openwrath find {asset}")
+    if want_type:
+        wt = want_type.lower()
+        typed = [e for e in hits if e["type"] and e["type"].lower() == wt]
+        if not typed:
+            avail = sorted({e["type"] for e in hits if e["type"]})
+            sys.exit(f"error: no asset named '{asset}' of type '{want_type}'. "
+                     f"Available type(s): {', '.join(avail) or '(untyped)'}")
+        hits = typed
+    exact = [e for e in hits if e["inst"] == asset]
+    return exact if exact else hits
+
+
+def cmd_find(args) -> int:
+    idx = load_stream_index(read_config(), args.target, args.stream)
+    text = args.text.lower()
+    want_type = (args.type or "").lower()
+    names = sorted({
+        e["name"] for e in idx["entries"]
+        if e["inst"] and text in e["inst"].lower()
+        and (not want_type or (e["type"] and e["type"].lower() == want_type))
+    })
+    for nm in names:
+        print(nm)
+    return 0
+
+
+def cmd_uses(args) -> int:
+    idx = load_stream_index(read_config(), args.target, args.stream)
+    targets = {(e["tid"], e["iid"]) for e in _resolve_asset(idx, args.asset, args.type)}
+    users = sorted({
+        e["name"] for e in idx["entries"]
+        if any((rt, ri) in targets for (rt, ri) in e["refs"]) and e["name"]
+    })
+    for nm in users:
+        print(nm)
+    return 0
+
+
+def cmd_trace(args) -> int:
+    idx = load_stream_index(read_config(), args.target, args.stream)
+    start = _resolve_asset(idx, args.asset, args.type)[0]
+    seen: set = set()
+
+    def label(e):
+        return e["name"] or f'0x{e["tid"]:08x}:0x{e["iid"]:08x}'
+
+    def walk(e, depth):
+        key = (e["tid"], e["iid"])
+        if key in seen:
+            print("  " * depth + label(e) + "  (seen)")
+            return
+        print("  " * depth + label(e))
+        seen.add(key)
+        if depth >= args.depth:
+            return
+        for (rt, ri) in e["refs"]:
+            child = idx["by_iid"].get(ri)
+            if child is not None and child["tid"] == rt:
+                walk(child, depth + 1)
+            else:
+                print("  " * (depth + 1) + f"0x{rt:08x}:0x{ri:08x}  (external)")
+
+    walk(start, 0)
+    return 0
+
+
+def _default_stringhashes(cfg: dict) -> str | None:
+    """StringHashes.xml to feed the decompiler/harness: configured one if present, else the
+    known master under the user's home if it exists, else None (omit)."""
+    sh = cfg.get("stringhashes")
+    if sh and Path(sh).exists():
+        return sh
+    fallback = Path.home() / "cnc-kw-godmod/ea-roundtrip/master/StringHashes.xml"
+    return str(fallback) if fallback.exists() else None
+
+
+def _find_toplevel_block(lines: list[str], inst: str, want_type: str | None):
+    """Find the enclosing TOP-LEVEL asset element (a direct, one-tab-indented child of
+    <AssetDeclaration>) whose id attribute == inst (optionally of tag == want_type).
+    Returns (tag, start_line, end_line) inclusive, or None. Line-based so original formatting
+    and comments are preserved verbatim; this also rejects nested references (e.g. a map that
+    merely places the object at deeper indentation)."""
+    open_re = re.compile(r"^\t<([A-Za-z_][\w.]*)")
+    n = len(lines)
+    i = 0
+    while i < n:
+        m = open_re.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        tag = m.group(1)
+        # Accumulate the opening tag region until it is closed by '>'.
+        j = i
+        closed = self_closing = False
+        otext = []
+        while j < n:
+            otext.append(lines[j])
+            if ">" in lines[j]:
+                self_closing = lines[j].rstrip().endswith("/>")
+                closed = True
+                break
+            j += 1
+        if not closed:
+            i += 1
+            continue
+        idm = re.search(r'\bid="([^"]*)"', "\n".join(otext))
+        this_id = idm.group(1) if idm else None
+        if self_closing:
+            end = j
+        else:
+            close_re = re.compile(r"^\t</%s>\s*$" % re.escape(tag))
+            k = j + 1
+            while k < n and not close_re.match(lines[k]):
+                k += 1
+            end = k if k < n else j
+        if this_id == inst and (not want_type or tag.lower() == want_type.lower()):
+            return tag, i, end
+        i = end + 1
+    return None
+
+
+def cmd_inspect_source(args) -> int:
+    """Print the AUTHORING XML for an asset from the SDK source tree (cleaner than the
+    verbose decompiled form)."""
+    import subprocess
+    cfg = read_config()
+    (sdk,) = _need(cfg, "sdk")
+    inst = args.asset
+    want_type = args.type
+    r = subprocess.run(["grep", "-rlF", f'id="{inst}"', sdk],
+                       capture_output=True, text=True)
+    files = [f for f in r.stdout.splitlines() if f]
+    if not files:
+        sys.exit(f"error: no SDK source under {sdk} declares id=\"{inst}\".")
+    # Prefer non-map authoring files; maps only reference/override instances.
+    files.sort(key=lambda f: ("/maps/" in f.lower(), f))
+    vlog(f"candidate source file(s): {len(files)}")
+    for fp in files:
+        lines = Path(fp).read_text(encoding="utf-8", errors="replace").splitlines()
+        found = _find_toplevel_block(lines, inst, want_type)
+        if found:
+            tag, start, end = found
+            vlog(f"matched {tag} id=\"{inst}\" at {fp}:{start+1}-{end+1}")
+            print(f"# {fp}  ({tag} id=\"{inst}\", lines {start+1}-{end+1})")
+            sys.stdout.write("\n".join(lines[start:end + 1]) + "\n")
+            return 0
+    hint = f" of type '{want_type}'" if want_type else ""
+    sys.exit(f"error: found id=\"{inst}\" in the SDK but no enclosing top-level asset "
+             f"element{hint} (it may only appear as a nested reference). "
+             f"Searched: {files[0]}")
+
+
+def cmd_inspect(args) -> int:
+    import tempfile, glob, shutil, time
+    if args.source:
+        return cmd_inspect_source(args)
+    cfg = read_config()
+    bm, schema, ow = _need(cfg, "base_manifests", "schema", "openwrath")
+    idx = load_stream_index(cfg, args.target, args.stream)
+    hits = _resolve_asset(idx, args.asset, args.type)
+    if len({e["name"] for e in hits}) > 1:
+        sys.exit("error: ambiguous — multiple assets named '%s': %s. "
+                 "Disambiguate with --type <Type>."
+                 % (args.asset, ", ".join(sorted(e["name"] for e in hits))))
+    inst = hits[0]["inst"]
+    big, stream = idx["big"], idx["stream"]
+    cdir, _hit = ensure_stream_cache(big, stream, idx["target"], args.no_cache)
+    man = cdir / f"{stream}.manifest"
+    if not man.exists() or man.stat().st_size == 0:
+        sys.exit(f"error: could not extract stream '{stream}' from {big.name}.")
+    dec = Path(tempfile.mkdtemp(prefix="openwrath-inspect-"))
+    try:
+        rm = f'{Path(bm) / "global_common_2.manifest"};{Path(bm) / "static_common_2.manifest"}'
+        cmd = ["dotnet", str(Path(ow) / "Debug/bab-decompile.dll"), "decompile-stream",
+               str(man), "--rm", rm, "--schema", schema, "--only", inst, "--outdir", str(dec)]
+        sh = _default_stringhashes(cfg)
+        if sh:
+            cmd += ["--stringhashes", sh]
+        t0 = time.time()
+        r = _run(cmd, capture_output=True, text=True)
+        vlog(f"decompile-stream --only {inst}  ({time.time()-t0:.2f}s)")
+        xmls = glob.glob(str(dec / "*.xml"))
+        if not xmls:
+            sys.exit(f"error: decompile produced no XML for '{inst}'.\n"
+                     f"{r.stdout[-800:]}{r.stderr[-400:]}")
+        # decompile-stream names each file "<Type>.<Instance>.xml"; a --only name can match
+        # several types, so pick the one for the resolved asset's type.
+        typ = hits[0]["type"]
+        want_name = f"{typ}.{inst}.xml".lower() if typ else None
+        pick = (next((x for x in xmls if Path(x).name.lower() == want_name), None)
+                or next((x for x in xmls if inst.lower() in Path(x).name.lower()), xmls[0]))
+        sys.stdout.write(Path(pick).read_text(encoding="utf-8", errors="replace"))
+        return 0
+    finally:
+        shutil.rmtree(dec, ignore_errors=True)
+        if args.no_cache:
+            shutil.rmtree(cdir, ignore_errors=True)
+
+
+def cmd_verify(args) -> int:
+    """Byte-exact check of an asset against the GAME'S OWN shipped bytes.
+
+    Finds the base-game .big holding <stream>.manifest, extracts the stream (cached), RefPack-
+    decompresses it, and runs the proven roundtrip harness (--from-binary) to confirm OpenWrath
+    reproduces the shipped bytes. Bundles NO game content — reads only the user's install."""
+    import subprocess, tempfile, shutil, time
+    cfg = read_config()
+    ow, sdk, bm, schema, gi = _need(cfg, "openwrath", "sdk", "base_manifests",
+                                    "schema", "game_install")
+    stream = args.stream or "static_common"
+
+    # 1. locate the base-game big that holds <stream>.manifest
+    sys.path.insert(0, str(LIB))
+    import bigextract, refpack
+    want = f"{stream}.manifest".lower()
+    big = None
+    for cand in sorted(Path(gi).rglob("*.big")):
+        try:
+            if any(want in nm.lower() for nm, _, _ in bigextract.entries(str(cand))):
+                big = cand
+                break
+        except Exception:
+            continue
+    if big is None:
+        sys.exit(f"error: no .big under {gi} contains a '{stream}.manifest' stream.")
+    vlog(f"base stream '{stream}' lives in: {big}")
+
+    # 2. extract (cached) then RefPack-decompress the 4 stream files
+    cdir, _hit = ensure_stream_cache(big, stream, big.stem, args.no_cache)
+    work = Path(tempfile.mkdtemp(prefix="openwrath-verify-"))
+    try:
+        for ext in _STREAM_EXTS:
+            src = cdir / f"{stream}.{ext}"
+            if not src.exists():
+                continue
+            data = src.read_bytes()
+            if data[:1] in (b"\x10", b"\x90", b"\x11"):
+                out, _ = refpack.decompress(data)
+                vlog(f"  refpack {ext}: {len(data)} -> {len(out)} bytes")
+            else:
+                out = data
+                vlog(f"  {ext}: {len(data)} bytes (not refpack, kept)")
+            (work / f"{stream}.{ext}").write_bytes(out)
+        man = work / f"{stream}.manifest"
+        if not man.exists():
+            sys.exit(f"error: no decompressed {stream}.manifest to verify against.")
+
+        # 3. run the byte-exact harness against the game's own bytes
+        rt = Path(ow) / "tools/roundtrip.sh"
+        if not rt.exists():
+            sys.exit(f"error: roundtrip harness not found at {rt}.")
+        env = _dotnet_env()
+        env.update(KW_DATAROOT=sdk, KW_BASEMANIFESTS=bm, KW_SCHEMA=schema)
+        sh = _default_stringhashes(cfg)
+        if sh:
+            env["KW_STRINGHASHES"] = sh
+        cmd = ["bash", str(rt), "--from-binary", str(man), "--only", args.asset]
+        if sh:
+            cmd += ["--stringhashes", sh]
+        vlog(f"roundtrip: {' '.join(cmd)}")
+        t0 = time.time()
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        vlog(f"roundtrip exit={r.returncode}  ({time.time()-t0:.2f}s)")
+
+        # 4. parse + echo the per-asset result for this asset
+        buckets = ("BYTEEXACT", "SIZEOK_VALDIFF", "SIZEDIFF", "RECOMPILE-MISSING")
+        result_lines = [ln for ln in r.stdout.splitlines()
+                        if ln.strip().split()[:1] and ln.strip().split()[0] in buckets]
+        if args.type:
+            wt = args.type.lower()
+            typed = [ln for ln in result_lines
+                     if f"{wt}:" in ln.lower() or f" {wt}:" in ln.lower()]
+            if typed:
+                result_lines = typed
+        if not result_lines:
+            sys.stderr.write(r.stdout[-1200:] + r.stderr[-600:])
+            sys.exit(f"error: verify produced no per-asset result for '{args.asset}' "
+                     f"(stream '{stream}', big {big.name}).")
+        for ln in result_lines:
+            print(ln.strip())
+        verdict = result_lines[0].strip().split()[0]
+        if len(result_lines) == 1 and verdict == "BYTEEXACT":
+            print(f"\n{args.asset}: BYTEEXACT — OpenWrath reproduces the game's shipped bytes.")
+            return 0
+        allexact = all(ln.strip().split()[0] == "BYTEEXACT" for ln in result_lines)
+        if allexact:
+            print(f"\n{args.asset}: BYTEEXACT ({len(result_lines)} assets).")
+            return 0
+        print(f"\n{args.asset}: NOT byte-exact — see result(s) above.")
+        return 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if args.no_cache:
+            shutil.rmtree(cdir, ignore_errors=True)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
+    # Global -v/--verbose, accepted either before OR after the subcommand. The shared copy uses
+    # SUPPRESS so that, when absent at the sub level, it does not clobber a value given before it.
+    ap.add_argument("-v", "--verbose", action="store_true", default=False,
+                    help="print diagnostics (resolved paths, cache hit/miss, timings) to stderr")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
+                        help="print diagnostics to stderr")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("detect", help="auto-discover KW install/prefix/mods/SDK + write config")
-    sub.add_parser("show", help="print the resolved config and flag missing paths")
-    mod = sub.add_parser("mod", help="build/manage mods").add_subparsers(dest="mcmd", required=True)
-    b = mod.add_parser("bake", help="compile a mod's overrides + splice them into its target stream")
+    sub.add_parser("detect", parents=[common],
+                   help="auto-discover KW install/prefix/mods/SDK + write config")
+    sub.add_parser("show", parents=[common],
+                   help="print the resolved config and flag missing paths")
+    mod = sub.add_parser("mod", parents=[common],
+                         help="build/manage mods").add_subparsers(dest="mcmd", required=True)
+    b = mod.add_parser("bake", parents=[common],
+                       help="compile a mod's overrides + splice them into its target stream")
     b.add_argument("project", help="path to the mod project dir (contains mod.toml)")
     b.add_argument("--force", action="store_true", help="bake even if the game appears to be running")
     b.set_defaults(func=cmd_mod_bake)
-    r = mod.add_parser("revert", help="restore a target mod's big from the last openwrath backup")
+    r = mod.add_parser("revert", parents=[common],
+                       help="restore a target mod's big from the last openwrath backup")
     r.add_argument("target", help="target mod name (e.g. SecondIsomer)")
     r.add_argument("--force", action="store_true", help="revert even if the game appears to be running")
     r.set_defaults(func=cmd_mod_revert)
+
+    # discovery commands (read the installed stream; help you find what to mod + what it touches)
+    def _disc(name, help):
+        p = sub.add_parser(name, parents=[common], help=help)
+        p.add_argument("--target", help="installed mod to read (default: the sole installed mod)")
+        p.add_argument("--stream", default="static_mod", help="linked stream to read (default: static_mod)")
+        p.add_argument("--type", help="restrict to an asset type, e.g. GameObject (disambiguates a shared name)")
+        return p
+    ins = _disc("inspect", "decompile + print ONE asset from the installed stream")
+    ins.add_argument("asset", help="instance name, e.g. GDIMARV")
+    ins.add_argument("--source", action="store_true",
+                     help="print the authoring XML from the SDK source tree instead of decompiling")
+    ins.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    ins.set_defaults(func=cmd_inspect)
+    fnd = _disc("find", "list assets whose name contains TEXT")
+    fnd.add_argument("text", help="substring to match in the instance name")
+    fnd.set_defaults(func=cmd_find)
+    use = _disc("uses", "list assets that REFERENCE an asset (reverse refs)")
+    use.add_argument("asset", help="instance name, e.g. NODVenomLocomotor")
+    use.set_defaults(func=cmd_uses)
+    tr = _disc("trace", "print the outgoing reference tree of an asset")
+    tr.add_argument("asset", help="instance name, e.g. NODAvatar")
+    tr.add_argument("--depth", type=int, default=3, help="how deep to walk (default 3)")
+    tr.set_defaults(func=cmd_trace)
+
+    ver = sub.add_parser("verify", parents=[common],
+                         help="byte-exact check of an asset against the GAME'S OWN shipped bytes")
+    ver.add_argument("asset", help="instance name, e.g. GDIConstructionYard")
+    ver.add_argument("--type", help="restrict the reported result to this asset type")
+    ver.add_argument("--stream", help="base stream to check (default: static_common)")
+    ver.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    ver.set_defaults(func=cmd_verify)
+
     args = ap.parse_args()
+    global _VERBOSE
+    _VERBOSE = getattr(args, "verbose", False)
     if args.cmd == "detect":
         return cmd_detect(args)
     if args.cmd == "show":
