@@ -34,7 +34,11 @@ top, so the depth is teachable rather than gated.
 
 **Built to be built on.** OpenWrath is meant to be a foundation for other tools and a host for
 community modules. Its boundaries are treated as a public interface — stable, machine-readable, and
-honest — so what people build on top can stay reliable and maintainable.
+honest — so what people build on top can stay reliable and maintainable. That extends to the wider
+ecosystem: different mods were built against different *schema versions* of the data, so OpenWrath aims
+to be schema-aware — a default schema plus an additive, community-contributed set of supported variants,
+each a layout we derived and *verified*, carrying no one else's content (see
+[`docs/design/multi-schema-interop.md`](docs/design/multi-schema-interop.md)).
 
 ## How it's made
 

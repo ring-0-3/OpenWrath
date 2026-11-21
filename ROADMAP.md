@@ -87,6 +87,14 @@ anyone can *check*, not merely trust.
   CI a provable guarantee: everything emitted is schema-named or shipped-attested.
 - 📋 **Documented extension API** — clean, stable seams for third-party handlers and formats, with the
   round-trip + ground-truth gate as the acceptance test.
+- 📋 **Multi-schema interoperability** — read/author data for mods built against a *different schema version* than
+  retail (same types, drifted layout). A TypeHash-keyed layout registry + data-driven variant tables + a
+  derive-and-verify workflow, so OpenWrath has a default schema and an additive, community-contributed set of
+  supported variants — shipping authored descriptions, zero mod/EA content. Groundwork landed: `openwrath schema`
+  (drift visibility), a bake-time drift guard, and `--adopt-schema` for hash-only drift. Full design:
+  **[docs/design/multi-schema-interop.md](docs/design/multi-schema-interop.md)**. Motivating findings:
+  [0009](docs/findings/0009-decompiler-logiccommand-instance-read-desync.md) /
+  [0010](docs/findings/0010-insert-must-match-target-stream-type-schema-hash.md).
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
