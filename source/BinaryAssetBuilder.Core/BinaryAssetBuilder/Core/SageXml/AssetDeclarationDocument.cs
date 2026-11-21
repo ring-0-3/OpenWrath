@@ -1412,6 +1412,34 @@ namespace BinaryAssetBuilder.Core.SageXml
                 XmlDocument frag = new XmlDocument();
                 frag.Load(path);
                 ResolveXIncludes(frag.DocumentElement, Path.GetDirectoryName(path)); // nested includes
+                string xpointer = inc.GetAttribute("xpointer");
+                if (!string.IsNullOrEmpty(xpointer))
+                {
+                    // xpointer include: splice ONLY the selected node-set (e.g. the children of the
+                    // included file's <Behaviors> wrapper), NOT the whole document. Otherwise the
+                    // wrapper itself is pulled in, yielding <Behaviors><Behaviors>...</Behaviors></Behaviors>
+                    // which fails schema validation. Supported form is the one KW data uses:
+                    // "xmlns(p=uri) ... xpointer(<xpath>)".
+                    XmlNode anchor = inc;
+                    foreach (XmlNode sel in SelectXPointerNodes(frag, xpointer))
+                    {
+                        XmlNode importedSel = inc.OwnerDocument.ImportNode(sel, true);
+                        if (importedSel is XmlElement selEl)
+                        {
+                            // carry over xai: directives (e.g. joinAction="Add"/"Remove") from the xi:include
+                            foreach (XmlAttribute a in inc.Attributes)
+                            {
+                                if (a.Prefix == "xai")
+                                {
+                                    selEl.SetAttribute(a.LocalName, a.NamespaceURI, a.Value);
+                                }
+                            }
+                        }
+                        anchor = inc.ParentNode.InsertAfter(importedSel, anchor);
+                    }
+                    inc.ParentNode.RemoveChild(inc);
+                    continue;
+                }
                 XmlNode imported = inc.OwnerDocument.ImportNode(frag.DocumentElement, true);
                 if (imported is XmlElement impEl)
                 {
@@ -1426,6 +1454,34 @@ namespace BinaryAssetBuilder.Core.SageXml
                 }
                 inc.ParentNode.ReplaceChild(imported, inc);
             }
+        }
+
+        // Evaluate an XPointer of the form "xmlns(p=uri) ... xpointer(<xpath>)" against the included
+        // fragment and return the selected node-set. This is the only XPointer shape KW data uses
+        // (e.g. "xmlns(n=uri:ea.com:eala:asset) xpointer(/n:Behaviors/child::*)").
+        private static System.Collections.Generic.List<XmlNode> SelectXPointerNodes(XmlDocument frag, string xpointer)
+        {
+            System.Collections.Generic.List<XmlNode> result = new System.Collections.Generic.List<XmlNode>();
+            XmlNamespaceManager ns = new XmlNamespaceManager(frag.NameTable);
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(xpointer, @"xmlns\(\s*([^=\s)]+)\s*=\s*([^)]*?)\s*\)"))
+            {
+                ns.AddNamespace(m.Groups[1].Value, m.Groups[2].Value);
+            }
+            System.Text.RegularExpressions.Match xp = System.Text.RegularExpressions.Regex.Match(xpointer, @"xpointer\((.*)\)\s*$", System.Text.RegularExpressions.RegexOptions.Singleline);
+            string xpath = xp.Success ? xp.Groups[1].Value.Trim() : xpointer.Trim();
+            if (string.IsNullOrEmpty(xpath))
+            {
+                return result;
+            }
+            XmlNodeList nodes = frag.SelectNodes(xpath, ns);
+            if (nodes is not null)
+            {
+                foreach (XmlNode n in nodes)
+                {
+                    result.Add(n);
+                }
+            }
+            return result;
         }
 
         public void InplaceLoad(string reason)
