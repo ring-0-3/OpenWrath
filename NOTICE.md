@@ -5,7 +5,7 @@ licensed MIT, © 2020 Jana Mohn. The upstream `LICENSE` is retained verbatim and
 upstream code. Our additions below are released under the same MIT license.
 
 ## What upstream provides
-`BinaryAssetBuilder` ("BAB") — a .NET reimplementation of EA's SAGE/Kane's Wrath asset **compiler**
+`BinaryAssetBuilder` ("BAB") — a .NET implementation of the SAGE/Kane's Wrath asset **compiler**
 (authoring XML → compiled binary asset streams), plus the `SageBinaryData` struct definitions and the `Relo`
 serialization engine.
 

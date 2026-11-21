@@ -6,7 +6,7 @@ This expands on the attribution summary in [`NOTICE.md`](NOTICE.md).
 ## Lineage
 
 OpenWrath derives from **BinaryAssetBuilder** ("BAB") by Qibbi (Jana Mohn), released under the **MIT License**
-(© 2020 Jana Mohn). BAB is an independent reimplementation of the SAGE / Kane's Wrath asset *compiler*
+(© 2020 Jana Mohn). BAB is a .NET implementation of the SAGE / Kane's Wrath asset *compiler*
 (authoring XML → compiled binary asset streams), together with the `SageBinaryData` type definitions and the
 `Relo` serialization engine. OpenWrath retains the upstream MIT `LICENSE` verbatim; it continues to apply to
 all upstream code, and OpenWrath's own additions are released under the same license.
