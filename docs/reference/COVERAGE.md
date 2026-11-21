@@ -117,6 +117,13 @@ Types the decompiler encounters in shipped streams but the compiler does **not**
 families. The decompiler labels these rather than crashing, but they cannot round-trip. The art / W3D / texture
 / audio-file families belong to the planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`.
 
+## Known compiler limitations
+
+- ~~`xi:include` xpointer is not honored~~ — **FIXED 2026-11-21** (`../findings/0008-xinclude-xpointer-not-honored.md`).
+  The custom `ResolveXIncludes` now splices only the xpointer-selected node-set; units whose `<Behaviors>` use
+  xpointer includes (e.g. `GDICommando`) compile and round-trip byte-exact. Add an xpointer-using unit to the
+  corpus to keep it from regressing.
+
 ## Closed-loop corpus sweep (self-consistency)
 
 Separately from the ground-truth gate, `tools/corpus-roundtrip.sh` runs the **closed-loop** check

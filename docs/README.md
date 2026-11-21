@@ -10,6 +10,9 @@ genuinely different needs:
 - **Tutorials** *(coming)* — hands-on, learn-by-doing walkthroughs ("build your first mod").
 - **How-to guides** *(coming)* — short task recipes ("change a unit's armor", "repack a `.big`").
 - **Reference** *(coming)* — the exact spec: file formats, byte layouts, every flag.
+- **[Findings](findings/README.md)** — a dated catalogue of the non-obvious truths we've hit (compiler/schema
+  behaviour, how authored data resolves), each with evidence and an honest *verified vs. hypothesis* status.
+  Observability over obscurity.
 
 ## Understanding OpenWrath — the concept path
 
