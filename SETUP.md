@@ -7,6 +7,22 @@ to point it, so anyone (including us) can reproduce a working setup from scratch
 
 ---
 
+## Quick start
+
+One command checks your prerequisites, finds (or asks for) your data, builds the solution, and runs a smoke
+test:
+
+```bash
+./tools/setup.sh                   # guided
+./tools/setup.sh --non-interactive # accept detected/default values, no prompts (CI / scripts)
+```
+
+It auto-detects the three data inputs under `$HOME` (and, on WSL, under `/mnt/*`), validates them, and records
+them in the git-ignored `tools/dev-env.local`. If any input is missing it tells you exactly what to supply and
+skips the smoke test. The manual steps below describe the same flow if you'd rather do it by hand.
+
+---
+
 ## 1. Prerequisites
 
 - **Linux** (no Wine/VM needed).
@@ -15,6 +31,15 @@ to point it, so anyone (including us) can reproduce a working setup from scratch
 - `python3` (used only by `tools/roundtrip.sh` for the byte-compare).
 
 Check: `dotnet --version`
+
+### Windows via WSL
+
+Everything runs in WSL (WSL2 with any recent Ubuntu/Debian works) exactly like native Linux — no Wine, no
+Windows build of the tools. Install the Linux .NET SDK and `python3` **inside** WSL, then use the toolchain
+normally. Your game install and Mod SDK can stay on the Windows drive: reference them via `/mnt/c/...` (e.g.
+`/mnt/c/kw-mod-sdk/KanesWrathXMLFiles`). `tools/setup.sh` auto-detects common Windows-side locations under
+`/mnt/*`, and `tools/dev-env.sh` fills any unset path from `/mnt/<drive>/kw-mod-sdk` (or `cnc-kw-sdk`). dotnet
+runs inside WSL and simply reads those files over `/mnt`.
 
 ---
 

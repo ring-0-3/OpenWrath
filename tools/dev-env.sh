@@ -22,6 +22,37 @@ KWT_ROOT="$(cd "$(dirname "$_dev_src")/.." && pwd)"
 # 1) machine-specific overrides (git-ignored)
 [ -f "$KWT_ROOT/tools/dev-env.local" ] && . "$KWT_ROOT/tools/dev-env.local"
 
+# 1b) WSL: on WSL the SDK / game data often lives on the Windows drive, reachable under /mnt/<drive>. dotnet
+#     still runs INSIDE WSL (Linux) as normal — we only READ the Windows-side files over /mnt. This is an
+#     ADDITIONAL fallback: it fills ONLY values you have not set (in dev-env.local or the environment) and
+#     only when the native-Linux default isn't present, so native behavior is unchanged.
+case "$(uname -r 2>/dev/null)" in
+    *[Mm]icrosoft*|*[Ww][Ss][Ll]*) _dev_wsl=1 ;;
+    *) _dev_wsl=0 ;;
+esac
+[ "$_dev_wsl" = 0 ] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null && _dev_wsl=1
+if [ "$_dev_wsl" = 1 ]; then
+    for _drv in c d e f g h; do
+        _m="/mnt/$_drv"
+        [ -d "$_m" ] || continue
+        if [ -z "${KW_SDK:-}" ] && [ ! -e "$HOME/kw-mod-sdk/KanesWrathXMLFiles" ]; then
+            for _sub in kw-mod-sdk cnc-kw-sdk; do
+                [ -e "$_m/$_sub/KanesWrathXMLFiles" ] && { KW_SDK="$_m/$_sub"; break; }
+            done
+        fi
+        if [ -z "${KW_BASEMANIFESTS:-}" ] && [ ! -e "$HOME/kw-mod-sdk/base-manifests" ]; then
+            for _sub in kw-mod-sdk/base-manifests cnc-kw-sdk/base-manifests; do
+                [ -e "$_m/$_sub" ] && { KW_BASEMANIFESTS="$_m/$_sub"; break; }
+            done
+        fi
+        if [ -z "${KW_SCHEMA_SRC:-}" ] && [ ! -e "$KWT_ROOT/schemas/kw/xsd/CnC3Types.xsd" ]; then
+            for _sub in kw-mod-sdk/schemas cnc-kw-sdk/schemas; do
+                [ -e "$_m/$_sub/kw/xsd/CnC3Types.xsd" ] && { KW_SCHEMA_SRC="$_m/$_sub"; break; }
+            done
+        fi
+    done
+fi
+
 # Defaults — override in tools/dev-env.local
 : "${KW_SDK:=$HOME/kw-mod-sdk}"                              # the Kane's Wrath Mod SDK checkout
 : "${KW_DATAROOT:=$KW_SDK/KanesWrathXMLFiles}"              # SDK asset XML (compiler data root)
@@ -53,4 +84,4 @@ if [ "$_dev_ok" = 1 ]; then
 else
     echo "dev-env: some data is missing. Set paths in tools/dev-env.local (see tools/dev-env.local.example)."
 fi
-unset _dev_src _dev_ok
+unset _dev_src _dev_ok _dev_wsl _drv _m _sub 2>/dev/null || true

@@ -13,3 +13,12 @@
 
 # RefPack-decompressed base-stream manifests, for cross-stream reference resolution (-rm):
 # KW_BASEMANIFESTS="$HOME/kw-mod-sdk/base-manifests"
+
+# Path straight to the root XSD (passed as -sp / --schema). Set this if your CnC3Types.xsd lives somewhere
+# other than the repo's schemas/ dir — it takes precedence over the KW_SCHEMA_SRC symlink. tools/setup.sh
+# writes this for you when it finds a schema outside the repo:
+# KW_SCHEMA="$HOME/kw-mod-sdk/schemas/kw/xsd/CnC3Types.xsd"
+
+# WSL: no special knobs needed. If you keep the SDK/game data on the Windows drive, point the paths above at
+# it via /mnt (e.g. KW_SDK="/mnt/c/kw-mod-sdk"). dev-env.sh also auto-fills unset paths from common
+# /mnt/<drive>/kw-mod-sdk and cnc-kw-sdk locations; dotnet runs inside WSL and just reads those files.
