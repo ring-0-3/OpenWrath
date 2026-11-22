@@ -22,9 +22,12 @@ Read these in order. Each builds on the last.
    the three parts that solve it (compiler, decompiler, and the archive/stream tools).
 2. [Asset streams](02-asset-streams/README.md) — the central idea: how the game bundles its compiled data, and
    why it's much closer to a linked executable than to a "stream of bytes."
+3. [The authoring XML](03-the-authoring-xml/README.md) — the human-readable form you write: the
+   `AssetDeclaration` envelope, how `<Includes>` wires files together, and the `inheritFrom` / `xai:joinAction`
+   vocabulary that lets a tiny file override a huge asset.
 
-*(More chapters will follow — the on-disk format in detail, references and the import graph, how the
-decompiler reverses it, and then the hands-on tutorials.)*
+*(More chapters will follow — references and the import graph, how the decompiler reverses it, and then the
+hands-on tutorials.)*
 
 ---
 
