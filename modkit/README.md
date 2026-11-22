@@ -85,4 +85,5 @@ See `config.example.toml` for the full schema.
       (clean abort, nothing installed) and offers `--adopt-schema` to stamp the stream's hash where the drift is
       hash-only. Drift that also changes layout can't be authored with our retail schema. See
       `docs/findings/0010`.
-- [ ] `trace` — walk a unit → weapons → projectiles → effects so you know *what asset to mod*.
+- [x] `trace` — walk a unit → weapons → projectiles → effects (outgoing reference tree; cycle-safe,
+      `--depth` / `--type`) so you know *what asset to mod*.
