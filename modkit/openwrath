@@ -14,8 +14,11 @@ Design rules (hard):
     so there is nothing to gitignore and no path ever lands in version control.
 
 Subcommands:
+  init          guided setup: auto-detect, confirm bring-your-own paths, write the config (Enter-to-accept)
   detect        auto-discover this machine's KW install / prefix / mods / SDK and write the config
   show          print the resolved config and flag anything missing
+  gen-stringhashes   build the master StringHashes.xml from your own SDK (compiles with -scd, merges)
+  extract-manifests  extract + RefPack-decompress the base-stream manifests from your installed game
   mod bake      compile a mod's overrides + splice/insert them into a target stream, repack, install
   mod revert    restore a target mod's big from the last openwrath backup
   inspect <a>   decompile + print ONE asset from the installed stream (what the game actually loads)
@@ -49,6 +52,13 @@ CONFIG_PATH = (
     Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     / "openwrath" / "config.toml"
 )
+
+
+def _xdg_data_dir() -> Path:
+    """Per-user data dir for things openwrath PRODUCES (the StringHashes table, extracted base
+    manifests). XDG: $XDG_DATA_HOME/openwrath, else ~/.local/share/openwrath. Never a repo path."""
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return base / "openwrath"
 
 # Keys we resolve, with a human description. Discovered keys are auto-filled by `detect`;
 # "byo" (bring-your-own) keys are things only the user can point us at (their SDK, etc.).
@@ -89,6 +99,44 @@ def read_config() -> dict:
         return tomllib.load(f).get("paths", {})
 
 
+# --- WSL awareness -----------------------------------------------------------------------
+# Under WSL the game is a native WINDOWS app living on a Windows drive, mounted at /mnt/<letter>.
+# There is no Proton/Wine prefix; the Mods dir is in the Windows user's Documents. These helpers
+# add that as an ADDITIONAL detection branch — native Linux (Flatpak/Proton) is untouched.
+WSL_MNT = Path("/mnt")   # where Windows drives mount under WSL (module-level so tests can redirect)
+
+
+def is_wsl() -> bool:
+    """True when running under the Windows Subsystem for Linux."""
+    try:
+        if "microsoft" in os.uname().release.lower() or "wsl" in os.uname().release.lower():
+            return True
+    except Exception:
+        pass
+    try:
+        v = Path("/proc/version").read_text(errors="replace").lower()
+        return "microsoft" in v or "wsl" in v
+    except Exception:
+        return False
+
+
+def windows_drives() -> list[Path]:
+    """Existing /mnt/<letter> Windows-drive mounts (empty off WSL / when none are mounted)."""
+    if not WSL_MNT.exists():
+        return []
+    return sorted(p for p in WSL_MNT.iterdir()
+                  if p.is_dir() and len(p.name) == 1 and p.name.isalpha())
+
+
+def winpath_to_mnt(winpath: str) -> Path:
+    """Translate a Windows path ('C:\\Program Files\\Steam') to its WSL mount ('/mnt/c/...').
+    Leaves a non-Windows path unchanged, so this is safe to apply unconditionally."""
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", winpath)
+    if not m:
+        return Path(winpath)
+    return WSL_MNT / m.group(1).lower() / m.group(2).replace("\\", "/")
+
+
 # --- Steam / prefix discovery ------------------------------------------------------------
 def steam_roots() -> list[Path]:
     home = Path.home()
@@ -98,6 +146,10 @@ def steam_roots() -> list[Path]:
         home / ".steam/steam",
         home / ".steam/root",
     ]
+    if is_wsl():
+        for drive in windows_drives():                                 # Windows-side Steam
+            candidates += [drive / "Program Files (x86)/Steam",
+                           drive / "Program Files/Steam"]
     seen, out = set(), []
     for c in candidates:
         rp = c.resolve() if c.exists() else c
@@ -108,13 +160,15 @@ def steam_roots() -> list[Path]:
 
 
 def library_paths(steam_root: Path) -> list[Path]:
-    """Every Steam library folder (games may live on other drives), from libraryfolders.vdf."""
+    """Every Steam library folder (games may live on other drives), from libraryfolders.vdf.
+    Windows-style paths in the .vdf (as under WSL) are translated to their /mnt mount."""
     libs = [steam_root]
     for vdf in (steam_root / "steamapps/libraryfolders.vdf",
                 steam_root / "config/libraryfolders.vdf"):
         if vdf.exists():
             for m in re.finditer(r'"path"\s*"([^"]+)"', vdf.read_text(errors="replace")):
-                p = Path(m.group(1))
+                raw = m.group(1).replace("\\\\", "\\")   # .vdf escapes backslashes
+                p = winpath_to_mnt(raw) if re.match(r"^[A-Za-z]:", raw) else Path(raw)
                 if p not in libs:
                     libs.append(p)
     return libs
@@ -134,6 +188,23 @@ def find_install_and_prefix() -> tuple[Path | None, Path | None, Path | None]:
 def find_mods_dir(prefix: Path) -> Path | None:
     docs = prefix / "drive_c/users/steamuser/Documents" / WINE_DOCS_NAME / "Mods"
     return docs if docs.exists() else None
+
+
+def find_mods_dir_wsl() -> Path | None:
+    """On WSL there is no Wine prefix — the Mods dir lives in the Windows user's Documents.
+    Scan /mnt/<drive>/Users/<user>/Documents/<game>/Mods, skipping the built-in accounts."""
+    skip = {"Public", "Default", "All Users", "Default User"}
+    for drive in windows_drives():
+        users = drive / "Users"
+        if not users.exists():
+            continue
+        for ud in sorted(users.iterdir()):
+            if not ud.is_dir() or ud.name in skip:
+                continue
+            docs = ud / "Documents" / WINE_DOCS_NAME / "Mods"
+            if docs.exists():
+                return docs
+    return None
 
 
 def find_install_skudef(install: Path) -> Path | None:
@@ -178,7 +249,10 @@ def cmd_detect(_args) -> int:
     if root:    found["steam_root"] = str(root)
     if install: found["game_install"] = str(install)
     if prefix:  found["prefix"] = str(prefix)
-    if prefix and (mods := find_mods_dir(prefix)): found["mods_dir"] = str(mods)
+    if prefix and (mods := find_mods_dir(prefix)):
+        found["mods_dir"] = str(mods)
+    elif is_wsl() and (mods := find_mods_dir_wsl()):
+        found["mods_dir"] = str(mods)
     if install and (sku := find_install_skudef(install)): found["install_skudef"] = str(sku)
     found["openwrath"] = str(repo)
     for k, v in probe_byo(repo).items():
@@ -808,12 +882,12 @@ def cmd_trace(args) -> int:
 
 
 def _default_stringhashes(cfg: dict) -> str | None:
-    """StringHashes.xml to feed the decompiler/harness: configured one if present, else the
-    known master under the user's home if it exists, else None (omit)."""
+    """StringHashes.xml to feed the decompiler/harness: the configured one if present, else the
+    XDG default that `gen-stringhashes` writes if it exists, else None (omit). No personal path."""
     sh = cfg.get("stringhashes")
     if sh and Path(sh).exists():
         return sh
-    fallback = Path.home() / "cnc-kw-godmod/ea-roundtrip/master/StringHashes.xml"
+    fallback = _xdg_data_dir() / "StringHashes.xml"
     return str(fallback) if fallback.exists() else None
 
 
@@ -1104,6 +1178,413 @@ def cmd_schema(args) -> int:
     return 0
 
 
+# --- gen-stringhashes: build the master StringHashes table from your own SDK -------------
+# The binary stores some id / module-tag strings only as one-way hashes. The compiler can emit the
+# text<->hash map for a source via -scd:<dir> (it writes <dir>/StringHashes.xml), but one compile
+# only covers the strings in that source — so a MASTER table is the union across many sources. This
+# mirrors tools/roundtrip.sh (the -scd step) + tools/merge-stringhashes.py (the union), as one step.
+_SH_NS = "uri:ea.com:eala:asset"
+BASE_STREAMS = ("global_common_2", "static_common_2", "global_english_2")
+
+
+def _base_rm(bm: Path) -> str:
+    """The -rm reference-manifest list for the base streams, from a base_manifests dir (only
+    the files that actually exist). Matches SETUP.md / roundtrip.sh."""
+    return ";".join(str(bm / f"{s}.manifest") for s in BASE_STREAMS
+                    if (bm / f"{s}.manifest").exists())
+
+
+def _merge_stringhashes(paths) -> dict:
+    """Union many per-file StringHashes.xml tables into {hash(int): text(str)}. Visited in sorted
+    path order; the FIRST text seen for a hash wins (deterministic). A later, different text for the
+    same hash is a genuine collision in the source data — logged to stderr, original kept."""
+    import xml.etree.ElementTree as ET
+    merged: dict = {}
+    for t in sorted(set(str(p) for p in paths)):
+        try:
+            tree = ET.parse(t)
+        except (ET.ParseError, OSError) as e:
+            vlog(f"  skip unparseable StringHashes table {t}: {e}")
+            continue
+        for el in tree.iter():
+            if el.tag.split("}")[-1] != "StringAndHash":
+                continue
+            h, txt = el.get("Hash"), el.get("Text")
+            if h is None or txt is None:
+                continue
+            try:
+                hi = int(h)
+            except ValueError:
+                continue
+            if hi in merged:
+                if merged[hi] != txt:
+                    vlog(f"  collision hash={hi}: keep '{merged[hi]}' drop '{txt}' (from {t})")
+            else:
+                merged[hi] = txt
+    return merged
+
+
+def _collect_stringhashes(cache_root) -> dict:
+    """Merge every StringHashes.xml found under cache_root into one table (recursive)."""
+    return _merge_stringhashes(Path(cache_root).rglob("StringHashes.xml"))
+
+
+def _write_stringhashes(out: Path, merged: dict) -> None:
+    """Write the VERSION5 single-TheStringTable form, sorted by numeric hash (stable diff)."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace('"', "&quot;")
+                .replace("<", "&lt;").replace(">", "&gt;"))
+    lines = ['<?xml version="1.0" encoding="utf-8"?>',
+             f'<AssetDeclaration xmlns="{_SH_NS}">',
+             '  <StringHashTable id="TheStringTable">']
+    lines += [f'    <StringAndHash Hash="{hi}" Text="{esc(merged[hi])}" />'
+              for hi in sorted(merged)]
+    lines += ['  </StringHashTable>', '</AssetDeclaration>', '']
+    out.write_text("\n".join(lines), encoding="utf-8")
+
+
+def cmd_gen_stringhashes(args) -> int:
+    import tempfile, shutil
+    cfg = read_config()
+    sdk, schema = cfg.get("sdk"), cfg.get("schema")
+    missing = [k for k, v in (("sdk", sdk), ("schema", schema))
+               if not v or not Path(v).exists()]
+    if missing:
+        sys.exit(f"error: {', '.join(missing)} not configured (or missing on disk) — run "
+                 f"`openwrath init` first (sdk + schema are bring-your-own).")
+    ow = cfg.get("openwrath") or str(openwrath_dir())
+    bab = Path(ow) / "Debug/BinaryAssetBuilder.dll"
+    if not bab.exists():
+        sys.exit(f"error: compiler not built — {bab} missing. Build Debug/ first (see SETUP.md).")
+
+    src_root = Path(args.source) if args.source else Path(sdk)
+    if not src_root.exists():
+        sys.exit(f"error: source path does not exist: {src_root}")
+    sources = [src_root] if src_root.is_file() else sorted(src_root.rglob("*.xml"))
+    if not sources:
+        sys.exit(f"error: no .xml source files under {src_root}")
+
+    out = Path(args.out).expanduser() if args.out else _xdg_data_dir() / "StringHashes.xml"
+    bm = Path(cfg["base_manifests"]) if cfg.get("base_manifests") else None
+    rm = _base_rm(bm) if (bm and bm.exists()) else ""
+    if not rm:
+        vlog("  no base_manifests configured — compiling without -rm (ids still hash, cross-refs may not resolve)")
+
+    print(f"gen-stringhashes: compiling {len(sources)} source file(s) under {src_root}\n"
+          f"  (per-file failures are tolerated; the table is the union of what compiles)")
+    work = Path(tempfile.mkdtemp(prefix="openwrath-stringhashes-"))
+    try:
+        caches = work / "caches"
+        caches.mkdir()
+        tables = 0
+        for i, src in enumerate(sources):
+            cdir = caches / f"c{i}"
+            # Mirror tools/roundtrip.sh's reference compile, plus -scd to emit the hash table.
+            cmd = ["dotnet", str(bab), str(src), f"-dr:{sdk}", f"-data:{sdk}",
+                   f"-od:{work / ('od%d' % i)}", f"-sp:{schema}",
+                   "-sc:false", "-bc:false", f"-scd:{cdir}"]
+            if rm:
+                cmd.append(f"-rm:{rm}")
+            _run(cmd, capture_output=True, text=True)
+            sh = cdir / "StringHashes.xml"
+            if sh.exists() and sh.stat().st_size > 0:
+                tables += 1
+            vlog(f"  [{i + 1}/{len(sources)}] {src.name}: "
+                 f"{'table' if sh.exists() else 'no table'}")
+        merged = _collect_stringhashes(caches)
+        if not merged:
+            sys.exit("error: no StringHashes entries were produced (did any source compile? "
+                     "re-run with -v to see per-file results).")
+        _write_stringhashes(out, merged)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    cfg["stringhashes"] = str(out)
+    write_config(cfg)
+    print(f"\n  ✓ {len(merged)} unique hashes from {tables} table(s) -> {out}")
+    print(f"  config updated: stringhashes = {out}")
+    return 0
+
+
+# --- extract-manifests: pull the base-stream manifests out of the installed game ---------
+def cmd_extract_manifests(args) -> int:
+    """Extract + RefPack-decompress the base-stream .manifest files from the installed game's .big
+    archives, into a base_manifests dir. These resolve cross-stream references when compiling; they
+    are the user's own game data and are written OUTSIDE any repo (XDG), never shipped."""
+    cfg = read_config()
+    gi = cfg.get("game_install")
+    if not gi or not Path(gi).exists():
+        sys.exit("error: game install not detected (or missing on disk) — run `openwrath init` "
+                 "(or `openwrath detect`) first.")
+    out = Path(args.out).expanduser() if args.out else _xdg_data_dir() / "base-manifests"
+    out.mkdir(parents=True, exist_ok=True)
+
+    sys.path.insert(0, str(LIB))
+    import bigextract, refpack
+
+    bigs = sorted(Path(gi).rglob("*.big"))
+    if not bigs:
+        sys.exit(f"error: no .big archives under {gi} — is the install complete?")
+    done = []
+    for stream in BASE_STREAMS:
+        member = f"{stream}.manifest"
+        hit = None
+        for big in bigs:
+            try:
+                ents = bigextract.entries(str(big))
+            except Exception:
+                continue
+            for nm, foff, fsize in ents:
+                if os.path.basename(nm.replace("\\", "/")).lower() == member:
+                    hit = (big, foff, fsize)
+                    break
+            if hit:
+                break
+        if not hit:
+            print(f"  (skipped {stream}: no '{member}' in any .big under the install)")
+            continue
+        big, foff, fsize = hit
+        with open(big, "rb") as f:
+            f.seek(foff)
+            data = f.read(fsize)
+        if data[:1] in (b"\x10", b"\x90", b"\x11"):     # RefPack-compressed in the big
+            data, _ = refpack.decompress(data)
+        (out / member).write_bytes(data)
+        done.append(stream)
+        print(f"  extracted {member} ({len(data)} bytes) <- {big.name}")
+
+    if not done:
+        sys.exit(f"error: found no base-stream manifests under {gi} "
+                 f"(looked for {', '.join(s + '.manifest' for s in BASE_STREAMS)}).")
+    cfg["base_manifests"] = str(out)
+    write_config(cfg)
+    print(f"\n  ✓ {len(done)} manifest(s) -> {out}")
+    print(f"  config updated: base_manifests = {out}")
+    return 0
+
+
+# --- init: guided setup wizard -----------------------------------------------------------
+_BYO_HINTS = {
+    "sdk": "provide KanesWrathXMLFiles from your Kane's Wrath Mod SDK (see SETUP.md §2)",
+    "base_manifests": "run `openwrath extract-manifests` (needs the game install) — see SETUP.md §2",
+    "schema": "provide CnC3Types.xsd from your Mod SDK's xsd tree (see SETUP.md §2)",
+    "stringhashes": "run `openwrath gen-stringhashes` (needs sdk + schema) — see SETUP.md §4",
+}
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    try:
+        ans = input(f"{prompt} " + (f"[{default}] " if default else ""))
+    except EOFError:
+        return default
+    return ans if ans.strip() else default
+
+
+def _confirm(prompt: str, default: bool = True) -> bool:
+    try:
+        ans = input(f"{prompt} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+    except EOFError:
+        return default
+    return default if not ans else ans.startswith("y")
+
+
+def _head(p: Path, n: int = 4096) -> str:
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")[:n]
+    except OSError:
+        return ""
+
+
+def _validate_byo(key: str, path: str) -> str | None:
+    """Return a NORMALISED path if `path` really is the thing `key` wants, else None."""
+    if not path:
+        return None
+    p = Path(path).expanduser()
+    if key == "sdk":
+        if (p / "KanesWrathXMLFiles").is_dir():
+            p = p / "KanesWrathXMLFiles"
+        if p.is_dir() and (p.name == "KanesWrathXMLFiles" or next(p.rglob("*.xml"), None)):
+            return str(p)
+        return None
+    if key == "schema":
+        if p.is_file() and ("cnc3types" in p.name.lower() or "CnC3Types" in _head(p)):
+            return str(p)
+        return None
+    if key == "base_manifests":
+        if p.is_dir() and next(p.glob("*.manifest"), None):
+            return str(p)
+        return None
+    if key == "stringhashes":
+        if p.is_file() and (p.name.lower() == "stringhashes.xml"
+                            or "StringHashTable" in _head(p) or "StringAndHash" in _head(p)):
+            return str(p)
+        return None
+    return None
+
+
+def _walk_find(roots, matcher, max_depth: int = 6, max_hits: int = 8) -> list[Path]:
+    """Bounded search: walk each root to max_depth, pruning hidden/noisy dirs; `matcher(dir,
+    subdirs, files)` returns a list of hit Paths at that level. Stops at max_hits."""
+    skip = {"node_modules", "__pycache__", "proc", "sys", "dev"}
+    hits: list[Path] = []
+    for root in roots:
+        root = Path(root)
+        if not root.exists():
+            continue
+        base = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            d = Path(dirpath)
+            if len(d.parts) - base >= max_depth:
+                dirnames[:] = []
+            dirnames[:] = [x for x in dirnames if x not in skip and not x.startswith(".")]
+            for h in matcher(d, dirnames, filenames) or []:
+                if h not in hits:
+                    hits.append(h)
+                    if len(hits) >= max_hits:
+                        return hits
+    return hits
+
+
+def _byo_candidates(key: str, roots) -> list[Path]:
+    import fnmatch
+    if key == "sdk":
+        def m(d, dn, fn):
+            return [d / "KanesWrathXMLFiles"] if "KanesWrathXMLFiles" in dn else []
+    elif key == "schema":
+        def m(d, dn, fn):
+            return [d / f for f in fn if f.lower() == "cnc3types.xsd"]
+    elif key == "base_manifests":
+        def m(d, dn, fn):
+            if any(fnmatch.fnmatch(f, "*_2.manifest") for f in fn):
+                return [d]
+            return [d] if any(f.lower().endswith(".manifest") for f in fn) else []
+    elif key == "stringhashes":
+        def m(d, dn, fn):
+            return [d / f for f in fn if f.lower() == "stringhashes.xml"]
+    else:
+        return []
+    return _walk_find(roots, m)
+
+
+def _offer_generator(key: str, cfg: dict, auto: bool) -> str:
+    """If a missing byo item can be PRODUCED, offer to run its generator now. Never runs
+    unprompted in non-interactive mode (the generators are heavy and need real data)."""
+    if auto:
+        return ""
+    if key == "stringhashes" and cfg.get("sdk") and cfg.get("schema"):
+        if _confirm("    generate StringHashes.xml now (compiles your SDK — can take a while)?", True):
+            write_config(cfg)
+            try:
+                cmd_gen_stringhashes(argparse.Namespace(out=None, source=None))
+            except SystemExit as e:
+                print(f"    gen-stringhashes skipped: {e}")
+            return read_config().get("stringhashes", "")
+    if key == "base_manifests" and cfg.get("game_install"):
+        if _confirm("    extract base manifests from the installed game now?", True):
+            write_config(cfg)
+            try:
+                cmd_extract_manifests(argparse.Namespace(out=None))
+            except SystemExit as e:
+                print(f"    extract-manifests skipped: {e}")
+            return read_config().get("base_manifests", "")
+    return ""
+
+
+def _init_byo(key: str, cfg: dict, roots, auto: bool) -> str:
+    desc = dict((s[0], s[2]) for s in SCHEMA)[key]
+    cur = cfg.get(key, "")
+    valid_cur = _validate_byo(key, cur)
+    if valid_cur and (auto or _confirm(f"  {key}: keep configured {valid_cur}?", True)):
+        print(f"  [ok ] {key:15} {valid_cur}")
+        return valid_cur
+
+    for c in _byo_candidates(key, roots):
+        v = _validate_byo(key, str(c))
+        if not v:
+            continue
+        if auto or _confirm(f"  {key}: use {v}?", True):
+            print(f"  [ok ] {key:15} {v}")
+            return v
+
+    if not auto:
+        while True:
+            ans = _ask(f"  {key} ({desc}) — enter a path, or blank to skip:", "")
+            if not ans.strip():
+                break
+            v = _validate_byo(key, ans.strip())
+            if v:
+                print(f"  [ok ] {key:15} {v}")
+                return v
+            print(f"    that is not a valid {key} — try again (blank to skip).")
+
+    gen = _offer_generator(key, cfg, auto)
+    if gen:
+        print(f"  [ok ] {key:15} {gen}")
+        return gen
+    print(f"  [-- ] {key:15} (unset) — {_BYO_HINTS.get(key, '')}")
+    return ""
+
+
+def cmd_init(args) -> int:
+    auto = bool(getattr(args, "non_interactive", False) or getattr(args, "yes", False)
+                or not sys.stdin.isatty())
+    print("openwrath init — guided setup\n")
+    if auto:
+        print("  (non-interactive: accepting detected / validated defaults)\n")
+
+    cfg = read_config()                      # idempotent: keep whatever is already good
+    root, install, prefix = find_install_and_prefix()
+    repo = openwrath_dir()
+    found = dict(cfg)
+    if root:    found["steam_root"] = str(root)
+    if install: found["game_install"] = str(install)
+    if prefix:  found["prefix"] = str(prefix)
+    if prefix and (mods := find_mods_dir(prefix)):
+        found["mods_dir"] = str(mods)
+    elif is_wsl() and (mods := find_mods_dir_wsl()):
+        found["mods_dir"] = str(mods)
+    if install and (sku := find_install_skudef(install)):
+        found["install_skudef"] = str(sku)
+    found["openwrath"] = str(repo)
+    for k, v in probe_byo(repo).items():
+        found.setdefault(k, v)
+    write_config(found)                      # persist so generators can read sdk/schema/install
+
+    print("auto-detected:")
+    for key, kind, _desc in SCHEMA:
+        if kind != "auto":
+            continue
+        val = found.get(key, "")
+        print(f"  [{'ok ' if val else '!! '}] {key:15} {val or '(not found)'}")
+
+    search_roots = [Path.home()]
+    if install:
+        search_roots.append(install)
+    if prefix:
+        search_roots.append(prefix)
+    if is_wsl():
+        for drive in windows_drives():
+            search_roots += [drive / "Users", drive / "Program Files",
+                             drive / "Program Files (x86)"]
+
+    print("\nbring-your-own:")
+    for key in ("sdk", "base_manifests", "schema", "stringhashes"):
+        found[key] = _init_byo(key, found, search_roots, auto)
+        write_config(found)                  # incremental, so a later generator sees earlier keys
+
+    print(f"\nconfig written -> {CONFIG_PATH}\n")
+    cmd_show(argparse.Namespace())
+    ready = all(found.get(k) for k, _, _ in SCHEMA)
+    print("\nnext:")
+    if ready:
+        print("  modkit/openwrath find <text>      # explore installed assets")
+        print("  modkit/openwrath mod bake <dir>   # build a mod")
+    else:
+        print("  fill the remaining paths above (see SETUP.md), then re-run `openwrath init`")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
     # Global -v/--verbose, accepted either before OR after the subcommand. The shared copy uses
@@ -1118,6 +1599,22 @@ def main() -> int:
                    help="auto-discover KW install/prefix/mods/SDK + write config")
     sub.add_parser("show", parents=[common],
                    help="print the resolved config and flag missing paths")
+    ini = sub.add_parser("init", parents=[common],
+                         help="guided setup: detect + confirm bring-your-own paths + write config")
+    ini.add_argument("--non-interactive", dest="non_interactive", action="store_true",
+                     help="accept detected/validated defaults without prompting (CI-safe)")
+    ini.add_argument("-y", "--yes", dest="yes", action="store_true",
+                     help="assume yes — accept all defaults without prompting")
+    ini.set_defaults(func=cmd_init)
+    gsh = sub.add_parser("gen-stringhashes", parents=[common],
+                         help="generate the master StringHashes.xml from your SDK (needs sdk + schema)")
+    gsh.add_argument("--out", help="output path (default: $XDG_DATA_HOME/openwrath/StringHashes.xml)")
+    gsh.add_argument("--source", help="SDK source file or dir to compile (default: your sdk)")
+    gsh.set_defaults(func=cmd_gen_stringhashes)
+    em = sub.add_parser("extract-manifests", parents=[common],
+                        help="extract + decompress the base-stream manifests from the installed game")
+    em.add_argument("--out", help="output dir (default: $XDG_DATA_HOME/openwrath/base-manifests)")
+    em.set_defaults(func=cmd_extract_manifests)
     mod = sub.add_parser("mod", parents=[common],
                          help="build/manage mods").add_subparsers(dest="mcmd", required=True)
     b = mod.add_parser("bake", parents=[common],

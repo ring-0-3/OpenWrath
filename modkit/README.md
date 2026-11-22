@@ -19,22 +19,60 @@ tools. It does not replace them; it drives them.
 ## Quickstart
 
 ```sh
-modkit/openwrath detect              # auto-discover your KW install / prefix / mods / SDK; writes the config
+modkit/openwrath init                # guided setup: detect + confirm bring-your-own paths + write config
 modkit/openwrath show                # print the resolved config and flag anything missing or moved
 modkit/openwrath mod bake <project>  # compile a mod's overrides + splice them into its target stream + install
 modkit/openwrath mod revert <target> # restore a target's big from the last openwrath backup
 ```
 
-`detect` finds your Steam (Flatpak or native), the KW install + Proton prefix (even on other
-drives — it reads `libraryfolders.vdf`), your Mods folder, and the active launcher SkuDef.
-Bring-your-own paths (your SDK, the master StringHashes table) are yours to point it at. A *mod*
-is bring-your-own: the modkit is the capability and bundles no mod content or game data.
+**`init` is the one command to start with.** It runs auto-detection, then for each bring-your-own
+path it searches the usual places, offers what it finds (just press Enter to accept), validates
+whatever you type, and — if an item is missing but openwrath can produce it — offers to run the
+generator (`gen-stringhashes`, `extract-manifests`) on the spot. It is idempotent: re-running keeps
+your good values. For CI or scripts, `openwrath init --non-interactive` (also auto-selected when
+stdin is not a TTY) accepts every detected/validated default without prompting and never blocks.
+
+`detect` is the non-interactive discovery pass on its own: it finds your Steam (Flatpak, native, or
+Windows-side **under WSL**), the KW install + Proton prefix (even on other drives — it reads
+`libraryfolders.vdf`), your Mods folder, and the active launcher SkuDef. Bring-your-own paths (your
+SDK, the master StringHashes table) are yours to point it at. A *mod* is bring-your-own: the modkit
+is the capability and bundles no mod content or game data.
+
+### Producing the bring-your-own data
+
+Two of the bring-your-own inputs can be generated from material you already own:
+
+```sh
+modkit/openwrath gen-stringhashes            # compile your SDK with -scd and merge every emitted
+                                             #   StringHashes.xml into one master table (XDG data dir)
+modkit/openwrath extract-manifests           # pull + RefPack-decompress the base-stream manifests
+                                             #   (global_common_2 / static_common_2 / global_english_2)
+                                             #   out of your installed game's .big archives
+```
+
+Both default their output to `$XDG_DATA_HOME/openwrath/` (i.e. `~/.local/share/openwrath/`) and write
+the resulting path back into your config. Neither ships any game data — they read only your own
+install/SDK. `gen-stringhashes` needs `sdk` + `schema` configured; `extract-manifests` needs the game
+install detected. Use `--out` / `--source` to override paths.
+
+### Windows Subsystem for Linux (WSL)
+
+Detection also works when the game is installed on the Windows side and you run openwrath from a WSL
+distro. It finds Steam under `/mnt/<drive>/Program Files (x86)/Steam` (and library folders from
+`libraryfolders.vdf`, translating `C:\…` paths to `/mnt/c/…`), the install under
+`steamapps/common/`, and the Mods folder in the Windows user's Documents
+(`/mnt/c/Users/<you>/Documents/…/Mods`). There is no Proton/Wine prefix in this mode — the game is a
+native Windows app. Native-Linux (Flatpak/Proton) detection is unchanged.
 
 See `config.example.toml` for the full schema.
 
 ## Status / roadmap
 
-- [x] `detect` / `show` — environment discovery + config
+- [x] `init` — guided, idempotent setup wizard over `detect` + bring-your-own confirmation/validation;
+      `--non-interactive` / non-TTY safe. Offers to run the generators below for missing producible inputs.
+- [x] `detect` / `show` — environment discovery + config (Flatpak, native, and **WSL** / Windows-side)
+- [x] `gen-stringhashes` — build the master StringHashes.xml from your own SDK (`-scd` compile + union merge).
+- [x] `extract-manifests` — extract + RefPack-decompress the base-stream manifests from your installed game.
 - [x] `mod bake` — compile a mod's XML overrides and apply them to a target stream (base game or an existing
       mod): assets already in the stream are **replaced** (splice), brand-new assets are **inserted**
       (append-only, existing assets stay byte-identical — see `docs/findings/0006`), then repack the big,
@@ -48,4 +86,3 @@ See `config.example.toml` for the full schema.
       hash-only. Drift that also changes layout can't be authored with our retail schema. See
       `docs/findings/0010`.
 - [ ] `trace` — walk a unit → weapons → projectiles → effects so you know *what asset to mod*.
-- [ ] `stringhashes` — (re)generate the master StringHashes table from your own SDK.
