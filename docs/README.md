@@ -25,9 +25,10 @@ Read these in order. Each builds on the last.
 3. [The authoring XML](03-the-authoring-xml/README.md) — the human-readable form you write: the
    `AssetDeclaration` envelope, how `<Includes>` wires files together, and the `inheritFrom` / `xai:joinAction`
    vocabulary that lets a tiny file override a huge asset.
+4. [References and the import graph](04-references-and-the-import-graph/README.md) — how assets link within and
+   across streams, why cross-stream links use ids, and how a mod loads as an overlay on top of the base game.
 
-*(More chapters will follow — references and the import graph, how the decompiler reverses it, and then the
-hands-on tutorials.)*
+*(More chapters will follow — how the decompiler reverses the linking, and then the hands-on tutorials.)*
 
 ---
 
