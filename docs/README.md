@@ -13,6 +13,8 @@ genuinely different needs:
 - **[Findings](findings/README.md)** — a dated catalogue of the non-obvious truths we've hit (compiler/schema
   behaviour, how authored data resolves), each with evidence and an honest *verified vs. hypothesis* status.
   Observability over obscurity.
+- **[Onboarding](../onboarding/README.md)** — new to the codebase and want to *work on the toolchain itself*? A
+  doing-first path from clone → first mod → your first change, including a step-by-step add-a-command walkthrough.
 
 ## Understanding OpenWrath — the concept path
 
