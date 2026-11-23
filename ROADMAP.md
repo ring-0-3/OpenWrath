@@ -67,12 +67,24 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - 🔧 **`modkit/openwrath`** — a developer-facing, **config-driven** CLI that turns the hand-run pipeline into a
   few commands. Ships **zero game data**; discovers your own install/SDK and keeps all paths in a per-user config
   outside any repo. Implemented today:
-  - ✅ `detect` / `show` — auto-discover the install / prefix / mods / SDK and write/report the config.
+  - ✅ `detect` / `show` / `init` — auto-discover the install / prefix / mods / SDK, confirm bring-your-own
+    paths, and write/report the config (Flatpak, native, and WSL / Windows-side).
+  - ✅ `gen-stringhashes` / `extract-manifests` — produce the bring-your-own inputs from your own SDK and install.
   - ✅ `mod bake` — compile a mod's XML overrides and splice them into a target stream, repack the big,
     auto-backup, install. (A *mod* is bring-your-own; the modkit is the capability, it bundles no mod or EA data.)
   - ✅ `mod revert` — restore a target's big from the last backup.
-  - 📋 `trace` (walk a unit → weapons → projectiles → effects) and `stringhashes` (regenerate the master table
-    from your own SDK).
+  - ✅ `schema` — per-type TypeHash drift detection + a bake-time guard (`--adopt-schema`).
+  - ✅ `trace` / `uses` — walk the reference graph (outgoing / incoming) to find what to mod and what depends on it.
+  - 📋 `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
+    (decompiled from the SDK source), closing the loop: `trace` → `add` → edit → `bake`.
+  - 📋 `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player drops into `Mods/`
+    and runs with no OpenWrath installed.
+  - 📋 `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line
+    messages, run automatically before a bake.
+  - 📋 base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
+    streams (avoids C&C:Online / replay desync).
+  - 📋 installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler binary, so
+    setup is "install + init" rather than "clone + build".
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
 

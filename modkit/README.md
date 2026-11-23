@@ -87,3 +87,13 @@ See `config.example.toml` for the full schema.
       `docs/findings/0010`.
 - [x] `trace` — walk a unit → weapons → projectiles → effects (outgoing reference tree; cycle-safe,
       `--depth` / `--type`) so you know *what asset to mod*.
+- [ ] `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
+      (decompiled from the SDK source), closing the loop: `trace` → `add` → edit a value → `bake`.
+- [ ] `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player can drop into
+      `Mods/` and run with no OpenWrath installed.
+- [ ] `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line
+      messages, run automatically before a bake.
+- [ ] base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
+      streams (avoids C&C:Online / replay desync).
+- [ ] installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler, so setup is
+      "install + init" rather than "clone + build".
