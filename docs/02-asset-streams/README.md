@@ -38,17 +38,38 @@ Here's the part that rewards a systems background. On disk, a pointer field **ca
 address — nothing is loaded anywhere yet. SAGE solves this exactly the way an executable loader does.
 
 **Internal pointers → relocations.**
-When asset A points to a sub-object that lives in the same stream, the on-disk pointer field doesn't store an
-address — it stores a **byte offset**, and the `.relo` table records *"a pointer lives at offset X."* When the
-engine loads the `.bin` into memory, it walks the relocation table and patches each of those slots to
-`base_address + offset`. This is **literally code relocation** — the same fix-up a loader performs on a shared
-library.
+Two *different* offsets are in play here, and keeping them apart is the whole trick:
+
+- A pointer **field** sits at some position inside the `.bin` — its **slot offset**. The `.relo` table is
+  simply a list of these: *"a pointer lives at this offset."* It records **where the pointers are**.
+- That field doesn't hold an address (nothing is loaded yet) — it holds a **target offset**: the position of
+  the sub-object it points *to*, measured from the start of the same `.bin`. It records **where the target is**.
+
+At load time the engine reads `.bin` into memory starting at some `base_address`, then walks `.relo`. For each
+slot offset it visits `base_address + slot_offset` (that *finds* the pointer field), reads the `target_offset`
+stored there, and overwrites the field with `base_address + target_offset` (that *is* the pointer's new value).
+So "base + offset" happens **twice, with two different offsets** — one to *locate* the pointer, one to compute
+what it *points at*. This is **literally code relocation** — the same fix-up a loader performs on a shared library.
+
+Concretely: the blob loads at `0x10000`; a weapon's projectile-pointer field is at slot offset `40`, and the
+projectile sub-object itself at offset `500`. On disk, slot `40` holds the value `500`, and `.relo` lists `40`.
+The loader reads `.relo` entry `40` → visits `0x10000 + 40` → finds `500` → writes `0x10000 + 500 = 0x101F4`.
+The pointer now holds the projectile's real memory address.
+
+**Where does `base_address` come from?** It isn't stored on disk at all — that's the whole point. The offsets
+are written *as if the blob loaded at zero*, so the on-disk form is independent of where it actually ends up.
+The real `base_address` is simply wherever the engine allocates the blob in memory at load time; relocation
+then slides every pointer to match. (Same idea as position-independent code / RVAs in an ELF or PE file.) And
+it's why OpenWrath's own tools never need a real base: they stay in the **offset domain** — `base = 0`, walking
+`.relo`-marked slots as blob-relative positions — and never load anything into real memory. That
+base-independence is exactly what lets a stream decompile and recompile **byte-for-byte**.
 
 **Cross-stream references → imports.**
 When asset A references asset B that lives in a *different* stream — a mod unit referencing a base-game weapon,
-or any object referencing a shared audio event — the on-disk field stores an asset **id**, and the `.imp` table
-records *"an import lives at offset Y."* At load time the engine resolves it against all the other loaded
-streams. This is **dynamic-library symbol linking**, applied to game data.
+or any object referencing a shared audio event — the field can't use an offset at all (the target isn't in this
+blob), so it stores an asset **id**, and the `.imp` table records the position of each such field. At load time
+the engine resolves each id against all the other loaded streams and patches in the real address. This is
+**dynamic-library symbol linking**, applied to game data.
 
 So the engine's load path is:
 
