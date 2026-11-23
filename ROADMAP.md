@@ -116,9 +116,14 @@ anyone can *check*, not merely trust.
 
 ## Packaging & docs
 - 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no game content).
-- 🔧 **Docs & tutorials** — the "Understanding OpenWrath" concept guide has started (`docs/`: the big picture +
-  asset streams); more chapters, "your first mod," and plain write-ups of the **asset file format**. A teaching
-  layer so the format is *understood*, not hoarded.
+- 🔧 **Docs & tutorials** — the "Understanding OpenWrath" concept guide (`docs/`) now runs big picture → asset
+  streams → authoring XML → references/import graph; next are the decompiler chapter and "your first mod." A
+  teaching layer so the format is *understood*, not hoarded.
+- 🔧 **Onboarding for contributors** (`onboarding/`) — a doing-first path (understand → use → practice). Planned:
+  a sequence of small **practice exercises** (build a pluggable addition against the real tests, with a worked
+  solution to check against), and a **practice harness** that reproduces the codebase with one chosen part
+  removed, so you can reimplement a real piece (a command, a renderer, a container parser) against the existing
+  tests in isolation — one of the fastest ways to truly own a subsystem.
 
 ## How we calibrate against prior tooling
 The closest reference point, WrathEd, recognizes a wider set of top-level types (~66) but is Windows-only, is
