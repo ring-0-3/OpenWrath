@@ -19,7 +19,9 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   MiscAudio, AudioSettings, AudioLOD).
 - ✅ Compile-fail bug-class fixes surfaced by the ground-truth gate (field-order error; out-of-schema enum
   values) — see Verification.
-- 🔧 Close the remaining per-type gaps the matrix lists (MultiplayerColor recompile; GameObject value-diff).
+- ✅ **MultiplayerColor** recompile fixed — modeled its inline `MetaGameSide` field (8/8 byte-exact). The one
+  remaining data-type gap is the **GameObject residual**, tracked under Verification below (StringHashes coverage,
+  not a compiler change).
 
 ## Decompiler (binary → XML)
 - ✅ Generic read-walk over the shared struct layout — one engine reads every type, no per-type decompile code.
@@ -34,17 +36,21 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   This removes the last reliance on Windows-only decompiling tools.
 - 🔧 **Raise data-type coverage**, measured against the game's *shipped* bytes. Method: first-diff offset →
   module → schema → add/fix field → re-verify against shipped bytes. The GameObject tail has had structural bugs
-  fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case), bringing GameObjects to
-  **same-size, value-diff** vs shipped (see below). Art / W3D / texture / particle types are **out of scope
-  here** → content pipeline.
-- 🔧 **RefPack manifest/stream handling.** Shipped stream parts are often RefPack-compressed. RefPack is
-  identified by its **second** byte (`0xFB`); the first byte is a flags byte that *varies* (`0x10`/`0x11`/`0x90`/
-  `0x91` — `0x90` ships on `static_common.bin`). The reader's first guard matched only `0x10FB`, so the `0x90`/
-  `0x11` variants still misreported as "Xbox360 big-endian" (finding [0012] — overfit to one sampled variant +
-  duplicated-knowledge drift). Fix: detect on `byte[1] == 0xFB` via a **single shared `IsRefPack()`** (one
-  authority used by C# *and* `refpack.py`), correct the "0x10FB magic" wording, consolidate the duplicate
-  `pytools/refpack.py` + `modkit/lib/refpack.py`, then **decompress transparently** (port RefPack into the .NET
-  reader, or decompress in the harness) so a compressed manifest/stream just works.
+  fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case; the shared draw-module
+  `SetAnimsToLastFrameOnConstructionComplete` default), bringing GameObjects to **40/50 byte-exact** vs shipped
+  with the residual characterized (see below). Art / W3D are handled by their own pillar (W3DAnimation is already
+  byte-exact); textures / particles → content pipeline.
+- ✅ **RefPack detection + single authority** (finding [0012]). RefPack is identified by its **second** byte
+  (`0xFB`); the first byte is a flags byte that *varies* (`0x10`/`0x11`/`0x90`/`0x91` — `0x90` ships on
+  `static_common.bin`). A first guard matched only `0x10FB`, so other variants misreported as "Xbox360
+  big-endian" (overfit to one sampled variant + duplicated-knowledge drift). Fixed: detect on `byte[1] == 0xFB`
+  via a single shared authority (`Containers.RefPack.IsRefPack` in C#, `is_refpack()` in the canonical
+  `modkit/lib/refpack.py`), corrected the "0x10FB magic" wording, deleted the byte-identical duplicate
+  `pytools/refpack.py`, guarded by a variant unit test.
+- 🔧 **Transparent RefPack *decompression* in the .NET reader.** The modkit already decompresses (Python
+  `refpack.py`); the C# decompiler currently *detects* a compressed manifest and names the fix ("decompress
+  first"). Port the decompressor into the reader (or the harness) so a compressed manifest/stream just works
+  end to end.
 
 ## Verification & reliability
 - ✅ `tools/roundtrip.sh` — the correctness gate, two modes:
