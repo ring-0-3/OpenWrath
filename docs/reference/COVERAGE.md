@@ -4,7 +4,7 @@ What the toolchain can compile and decompile today, and — type by type — **h
 the bytes Kane's Wrath actually ships**. The numbers here are measured, not asserted; every one is
 reproducible with the harness described at the bottom.
 
-**Verification method / date.** Measured 2026-11-20 with the ground-truth gate
+**Verification method / date.** Measured 2026-11-24 with the ground-truth gate
 `tools/roundtrip.sh --from-binary <stream.manifest> --only <INSTANCE> --stringhashes <master/StringHashes.xml>`,
 which decompiles a *shipped* linked stream, recompiles the decompiled XML, and byte-compares each asset to the
 **original shipped bytes**, bucketed per type. Streams sampled: `static_common` (gameplay types) and
@@ -28,12 +28,13 @@ crashing), but only the 37 below have full compile support, so only they can rou
 
 ## Status by type (sample-verified against shipped bytes)
 
-Headline: **of 37 registered types, 33 reproduce EA's shipped bytes byte-exact on the sampled instances**, and
-**GameObject is now mostly byte-exact too** (~79% of a random sample) after closing its dominant draw-module
-value-diff; Environment is structurally exact with a residual value-diff; 1 has a compile gap; 1 has no instances
-in the sampled streams to measure here.
+Headline: **of 37 registered types, 34 reproduce EA's shipped bytes byte-exact on the sampled instances**
+(MultiplayerColor joined this set 2026-11-24 — see below), and **GameObject is now mostly byte-exact too**
+(**40/50 = 80%** of a *widened* random sample) after closing its dominant draw-module value-diff; Environment is
+structurally exact with a single residual value-diff that is a known-lossy reference (characterized below); 1 has
+no instances in the sampled streams to measure here (Road). There is no longer a `RECOMPILE-MISSING` type.
 
-### Byte-exact vs EA shipped bytes — sample-verified (33)
+### Byte-exact vs EA shipped bytes — sample-verified (34)
 
 Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXACT`.
 
@@ -58,6 +59,7 @@ Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXA
 | OnlineChatColors | static_common | OnlineChatColors |
 | ConnectionLineManager | static_common | ConnectionLineManager |
 | PhaseEffect | static_common | PhaseEffect |
+| MultiplayerColor | static_common | ColorBlue, ColorRed, ColorOrange, ColorGold, ColorGreen, ColorPink, ColorPurple, ColorSkyBlue (8/8, whole type) |
 | AmbientStream | global_common | AmbStream_BlueZone03_Pristine_5point1 |
 | MusicTrack | global_common | 5_1_STARTSCREEN_MUSIC_360 |
 | DialogEvent | global_common | BaseDialogEvent |
@@ -84,24 +86,50 @@ Same serialized **size** as the shipped asset (the struct shape and field order 
 
 | Type | Stream | Sampled | Bucket | First-diff offset | Note |
 |------|--------|---------|--------|-------------------|------|
-| Environment | static_common | Environment | SIZEOK_VALDIFF | 0x40 | One unresolved cross-stream reference. |
+| Environment | static_common | Environment | SIZEOK_VALDIFF | 0x40 | One known-lossy weak reference — characterized below; model is complete. |
 
-### GameObject — now mostly byte-exact vs shipped bytes
+**Environment — characterized (2026-11-24).** The model is structurally *and* semantically complete; the single
+residual byte is the `CloudEffect.LightningFX` field, a `TypedAssetId<FXList>` (schema `FXListWeakRef`) that in the
+shipped data holds `FastHash("fx_lightningthunderstrike") = 0x9d865d76`. Its target FXList (`FX_LightningThunderStrike`)
+is a *weak* reference that is **not defined anywhere in the SDK corpus** and **not present in the supplied master
+`StringHashes.xml`**, so the decompiler cannot invert the one-way hash and emits the raw `0x9d865d76` placeholder,
+which the compiler then re-hashes to a different value (first diff at 0x40). This is the *same known-lossy class* as
+`StringHash` — not a model defect. **Proven:** adding the one name to the StringHashes reverse table makes
+`Environment:Environment` recompile **BYTEEXACT**. Closing it for good is a StringHashes-coverage (data) task, not a
+code change.
 
-GameObject was previously same-size-with-a-value-diff across the board. The dominant diff was a single shared
+### GameObject — mostly byte-exact vs shipped bytes; residual fully characterized
+
+GameObject was previously same-size-with-a-value-diff across the board. The dominant diff — a single shared
 draw-module field (`W3DScriptedModelDrawModuleData.SetAnimsToLastFrameOnConstructionComplete`, schema default
-`true`) that the compiler was writing as `0` into former alignment padding; modeling it (one struct field + one
-marshal line) closed it for *every* object that embeds a scripted/tank draw module. Post-fix, a 14-instance random
-sample across static_common is **11/14 (~79%) BYTEEXACT** — including all three MARV variants, the construction
-yards, GDIAAScout, NODAttackBike, AlienEradicatorHexapod, GDIMedicalBay. The residual ~21% carry a separate,
-smaller class of 4-byte hash/reference value-diffs (unresolved StringHash or source drift), tracked next. Closed
-loop remains lossless.
+`true`) written as `0` into former alignment padding — was closed earlier (one struct field + one marshal line),
+fixing *every* object that embeds a scripted/tank draw module.
 
-### Registered but with an open compile gap (1)
+**Widened measurement (2026-11-24).** A reproducible random sample of **50** instances (seed 42) across
+static_common is **40/50 = 80% BYTEEXACT**, **10 SIZEOK_VALDIFF, 0 SIZEDIFF, 0 missing**. All 10 value-diffs are
+the **same, now fully-characterized class**: each is a set of isolated 4-byte dwords (relo/imp buffers byte-identical)
+that are **module-id tags** — `ModuleData.id` `TypedAssetId`s such as `ModuleTag_CaptureSpecialPower` on
+`<SpecialPower id="…">`, stored as `FastHash(tag.ToLower())`. The tag strings (mostly from shared includes like
+`Includes/CaptureBehavior.xml`) are **absent from the supplied master `StringHashes.xml`**, so the decompiler emits a
+`0x…` placeholder that the compiler re-hashes. Verified mechanically: for every differing dword, `new ==
+FastHash("0x%08x" % ea)`. The diffs cluster on squads/infantry (RifleSoldier, Sniper, Fanatic, MilitantRocket,
+Shadow, ImprovedCyborg) plus a couple of militant-rocket units. **Proven:** compiling a unit's source with `-scd`
+captures its tags; feeding those into the StringHashes table makes `GameObject:GDIRifleSoldierSquad` recompile
+**BYTEEXACT**. So the residual 20% is **StringHashes-coverage, not a model defect**. (A corpus-wide comprehensive
+StringHashes would raise the measured rate but is blocked by a separate `-scd` compiler crash —
+`KeyNotFoundException` during whole-tree StringHash finalization; noted, not chased.) Closed loop remains lossless.
 
-| Type | Stream | Sampled | Bucket | Note |
-|------|--------|---------|--------|------|
-| MultiplayerColor | static_common | ColorBlue | RECOMPILE-MISSING | Decompiles, but the decompiled XML does not yet recompile (no asset emitted on the recompile pass). Modeling gap to close. |
+### MultiplayerColor — fixed 2026-11-24 (was RECOMPILE-MISSING → now 8/8 BYTEEXACT)
+
+Previously the decompiled XML would not recompile. First-diff method located the cause: the C# `MultiplayerColor`
+struct was **missing a field**. The shipped 44-byte fixed struct is
+`Base, MetaGameSide(AnsiString), RGBColor, RGBColorT, RGBNightColor, LivingWorldColor, LivingWorldBannerColor,
+TooltipName(AnsiString), AvailableInMetaGame` — `MetaGameSide` (an `xs:attribute`, stored *inline* as an AnsiString
+e.g. `"NOD"`/`"GDI"` right after Base) was absent, shifting every later field by 8 bytes so the generic walker read
+`TooltipName` from the wrong offset and dropped the required `<TooltipName>` element (recompile then failed XSD
+validation). Fix is type-local: one struct field + one marshal line (`MetaGameSide` marshaled before `TooltipName`
+to match the shipped string-data order). **All 8 instances of the type** now recompile BYTEEXACT, both with
+`MetaGameSide` present (ColorRed=NOD, ColorOrange=GDI) and absent.
 
 ### Registered but not measurable in the sampled streams (1)
 

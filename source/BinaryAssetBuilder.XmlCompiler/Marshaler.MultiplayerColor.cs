@@ -9,6 +9,9 @@ public static partial class Marshaler
         {
             return;
         }
+        // MetaGameSide is an xs:attribute, stored inline as an AnsiString (e.g. "NOD"/"GDI") immediately after
+        // Base — allocated before TooltipName, so marshal it first to match the shipped string-data order.
+        Marshal(node.GetAttributeValue(nameof(MultiplayerColor.MetaGameSide), null), &objT->MetaGameSide, state);
         Marshal(node.GetChildNode(nameof(MultiplayerColor.RGBColor), null), &objT->RGBColor, state);
         Marshal(node.GetChildNode(nameof(MultiplayerColor.RGBColorT), null), &objT->RGBColorT, state);
         Marshal(node.GetChildNode(nameof(MultiplayerColor.RGBNightColor), null), &objT->RGBNightColor, state);

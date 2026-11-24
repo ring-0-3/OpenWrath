@@ -7,6 +7,7 @@ namespace SageBinaryData
     public struct MultiplayerColor
     {
         public BaseAssetType Base;
+        public AnsiString MetaGameSide;
         public Color RGBColor;
         public Color RGBColorT;
         public Color RGBNightColor;
