@@ -46,6 +46,16 @@ namespace BinaryAssetBuilder.Decompiler.Containers
 
         private void Parse()
         {
+            // Shipped stream manifests are often RefPack-compressed (magic 0x10FB). Such a file's non-zero
+            // first byte (0x10) would otherwise trip the little-endian check below and be misreported as an
+            // "Xbox360 big-endian" manifest — a misleading dead end. Detect it explicitly and name the real
+            // cause (it needs decompressing first), so the error points at the fix instead of the wrong platform.
+            if (_raw.Length >= 2 && _raw[0] == 0x10 && _raw[1] == 0xFB)
+            {
+                throw new NotSupportedException(
+                    "This manifest is RefPack-compressed (0x10FB magic), not a raw manifest — decompress it first. " +
+                    "It is NOT an Xbox360/big-endian manifest.");
+            }
             IsBigEndian = _raw[0] != 0;
             IsLinked = _raw[1] != 0;
             if (IsBigEndian)

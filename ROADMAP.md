@@ -37,6 +37,10 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case), bringing GameObjects to
   **same-size, value-diff** vs shipped (see below). Art / W3D / texture / particle types are **out of scope
   here** → content pipeline.
+- 📋 **Auto-decompress RefPack manifests/streams on read.** Shipped stream parts are often RefPack-compressed
+  (magic `0x10FB`); the reader currently needs a pre-decompressed input and now *detects + clearly reports* the
+  compression (previously misreported as "Xbox360 big-endian"). Next: decompress transparently — port RefPack
+  into the .NET reader, or decompress in the harness — so a compressed manifest/stream just works.
 
 ## Verification & reliability
 - ✅ `tools/roundtrip.sh` — the correctness gate, two modes:
