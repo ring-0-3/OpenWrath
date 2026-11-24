@@ -75,8 +75,8 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   - ✅ `mod revert` — restore a target's big from the last backup.
   - ✅ `schema` — per-type TypeHash drift detection + a bake-time guard (`--adopt-schema`).
   - ✅ `trace` / `uses` — walk the reference graph (outgoing / incoming) to find what to mod and what depends on it.
-  - 📋 `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
-    (decompiled from the SDK source), closing the loop: `trace` → `add` → edit → `bake`.
+  - ✅ `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
+    (from the SDK source), closing the loop: `trace` → `add` → edit → `bake`.
   - 📋 `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player drops into `Mods/`
     and runs with no OpenWrath installed.
   - 📋 `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line

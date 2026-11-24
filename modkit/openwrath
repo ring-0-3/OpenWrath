@@ -531,6 +531,131 @@ def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
     sys.exit(f"error: none of {big.name}'s streams contain the override ids — is the target right?")
 
 
+def _read_mod_spec(proj: Path) -> dict:
+    """Load a project's [mod] table, or exit with a clear error if there's no mod.toml."""
+    import tomllib
+    toml = proj / "mod.toml"
+    if not toml.exists():
+        sys.exit(f"error: no mod.toml in {proj}. Create one with: openwrath mod new {proj.name}")
+    return tomllib.loads(toml.read_text()).get("mod", {})
+
+
+def _write_mod_spec(proj: Path, spec: dict) -> None:
+    """Write a project's mod.toml from a [mod] spec dict (name / target / stream / sources)."""
+    lines = ["[mod]"]
+    for key in ("name", "target", "stream"):
+        if spec.get(key) is not None:
+            lines.append(f'{key} = "{spec[key]}"')
+    srcs = spec.get("sources", [])
+    lines.append("sources = [" + ", ".join(f'"{s}"' for s in srcs) + "]")
+    (proj / "mod.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _data_relpath(cfg: dict, abspath: Path) -> str:
+    """An SDK file's absolute path -> a `DATA:<relative>` include source (relative to the data root)."""
+    sdk = Path(cfg["sdk"]).resolve()
+    rel = Path(abspath).resolve().relative_to(sdk)
+    return "DATA:" + str(rel).replace("\\", "/")
+
+
+def cmd_mod_new(args) -> int:
+    """Scaffold a new mod project: a mod.toml + an empty src/ dir."""
+    proj = Path(args.project).resolve()
+    if (proj / "mod.toml").exists():
+        sys.exit(f"error: {proj / 'mod.toml'} already exists")
+    (proj / "src").mkdir(parents=True, exist_ok=True)
+    spec = {"name": args.name or proj.name,
+            "target": args.target or "",
+            "stream": args.stream,
+            "sources": []}
+    _write_mod_spec(proj, spec)
+    print(f"created mod project: {proj}")
+    print(f"  mod.toml  (name={spec['name']}, target={spec['target'] or '<<set me>>'}, stream={spec['stream']})")
+    print("  src/      (empty)")
+    print()
+    if not spec["target"]:
+        print("next: set `target` in mod.toml to the installed mod to bake into (e.g. SecondIsomer), then:")
+    else:
+        print("next:")
+    print(f"  openwrath mod add {proj.name} <AssetName>   # pull an asset in as an editable override")
+    return 0
+
+
+def cmd_mod_add(args) -> int:
+    """Pull an asset into a project as an editable override, taken from the SDK *source*
+    (not the installed binary — the SDK form always reads and sidesteps decompiler read-gaps)."""
+    import subprocess
+    proj = Path(args.project).resolve()
+    spec = _read_mod_spec(proj)
+    cfg = read_config()
+    (sdk,) = _need(cfg, "sdk")
+    inst, want_type = args.asset, args.type
+
+    # Locate the asset's authoring XML in the SDK — same engine as `inspect --source`.
+    r = subprocess.run(["grep", "-rlF", f'id="{inst}"', sdk], capture_output=True, text=True)
+    files = [f for f in r.stdout.splitlines() if f]
+    if not files:
+        sys.exit(f"error: no SDK source under {sdk} declares id=\"{inst}\". Try: openwrath find {inst}")
+    files.sort(key=lambda f: ("/maps/" in f.lower(), f))   # prefer authoring files over maps
+    hit = None
+    for fp in files:
+        lines = Path(fp).read_text(encoding="utf-8", errors="replace").splitlines()
+        found = _find_toplevel_block(lines, inst, want_type)
+        if found:
+            tag, start, end = found
+            hit = (fp, tag, lines[start:end + 1])
+            break
+    if not hit:
+        hint = f" of type '{want_type}'" if want_type else ""
+        sys.exit(f"error: found id=\"{inst}\" in the SDK but no enclosing top-level asset{hint} "
+                 f"(it may only appear as a nested reference).")
+    fp, tag, body = hit
+    inc = _data_relpath(cfg, Path(fp))
+
+    srcrel = f"src/{inst}.xml"
+    out = proj / srcrel
+    if out.exists() and not args.force:
+        sys.exit(f"error: {out} already exists (pass --force to overwrite).")
+    override = "\n".join([
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<AssetDeclaration',
+        '\txmlns="uri:ea.com:eala:asset"',
+        '\txmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+        '\txmlns:xi="http://www.w3.org/2001/XInclude"',
+        '\txmlns:xai="uri:ea.com:eala:asset:instance">',
+        '',
+        '\t<Tags/>',
+        '\t<Includes>',
+        f'\t\t<Include type="instance" source="{inc}" />',
+        '\t</Includes>',
+        '',
+        f'\t<!-- Override {tag} "{inst}" in place. inheritFrom itself keeps every original field,',
+        '\t     so you only list what you change below. (The current definition was printed when',
+        f'\t     this file was created; re-print it any time with `openwrath inspect {inst}`.) -->',
+        f'\t<{tag} id="{inst}" inheritFrom="{inst}">',
+        '\t\t<!-- e.g. change an attribute or add a child element here -->',
+        f'\t</{tag}>',
+        '',
+        '</AssetDeclaration>',
+        '',
+    ])
+    out.write_text(override, encoding="utf-8")
+
+    srcs = spec.get("sources", [])
+    if srcrel not in srcs:
+        srcs.append(srcrel)
+        spec["sources"] = srcs
+        _write_mod_spec(proj, spec)
+
+    print(f"added {tag} \"{inst}\" to {proj.name}")
+    print(f"  wrote {srcrel}  (inheritFrom-self override — edit the body, then `openwrath mod bake {proj.name}`)")
+    print(f"  from  {fp}")
+    print()
+    print("current definition (copy the field you want to change into the override body):")
+    print("\n".join("    " + l for l in body))
+    return 0
+
+
 def cmd_mod_bake(args) -> int:
     import tomllib, tempfile, shutil, glob, subprocess
     proj = Path(args.project).resolve()
@@ -1631,6 +1756,19 @@ def main() -> int:
     r.add_argument("target", help="target mod name (e.g. SecondIsomer)")
     r.add_argument("--force", action="store_true", help="revert even if the game appears to be running")
     r.set_defaults(func=cmd_mod_revert)
+    n = mod.add_parser("new", parents=[common], help="scaffold a new mod project (mod.toml + src/)")
+    n.add_argument("project", help="path to create for the mod project")
+    n.add_argument("--target", help="installed mod to bake into (e.g. SecondIsomer); can be set later in mod.toml")
+    n.add_argument("--stream", default="static_mod", help="target stream (default: static_mod)")
+    n.add_argument("--name", help="mod name (default: the project dir name)")
+    n.set_defaults(func=cmd_mod_new)
+    ad = mod.add_parser("add", parents=[common],
+                        help="pull an asset into a project as an editable override (from the SDK source)")
+    ad.add_argument("project", help="path to the mod project dir (contains mod.toml)")
+    ad.add_argument("asset", help="instance name, e.g. GDIMammothTank")
+    ad.add_argument("--type", help="restrict to an asset type (disambiguates a shared name)")
+    ad.add_argument("--force", action="store_true", help="overwrite an existing override file")
+    ad.set_defaults(func=cmd_mod_add)
 
     # discovery commands (read the installed stream; help you find what to mod + what it touches)
     def _disc(name, help):
