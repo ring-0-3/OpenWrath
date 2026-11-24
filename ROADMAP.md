@@ -100,6 +100,11 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   wired into **both** round-trip gates (`roundtrip.sh`, `corpus-roundtrip.sh`): drift → hard-abort before the
   round-trip, no baseline yet → warn + continue. Enforcement switches on automatically the moment `inputs.sha256`
   is generated from the clean set and committed (step 2). *Remaining:* generate + commit `inputs.sha256`.
+  **⚠ Version-blindness (finding [0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)):**
+  the baseline must be the **running patch version** the engine loads (1.3 / the patch `Static_mod`), not
+  `Core/1.0` or a raw retail `static_common`. `inputs.sha256` currently records *no* patch version, so a
+  pristine-but-stale (1.0) baseline would pass every input check and still crash the game on a `0010` TypeHash
+  mismatch. The baseline step must pin, and record, the patch version.
 - 📋 **BYO / EA-sourced inputs are read-only.** Schemas and game data are never modified in place; OpenWrath's
   additions live in owned, tracked files or in code. Encoded in `CLAUDE.md` and the subagent-spec template so it
   can't recur. (finding [0013])
@@ -124,10 +129,20 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   - ✅ `trace` / `uses` — walk the reference graph (outgoing / incoming) to find what to mod and what depends on it.
   - ✅ `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
     (from the SDK source), closing the loop: `trace` → `add` → edit → `bake`.
-  - 📋 `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player drops into `Mods/`
-    and runs with no OpenWrath installed.
-  - 📋 `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line
-    messages, run automatically before a bake.
+  - 🔧 `mod package` — builds a **correct, zero-EA overlay diff** (its own `static_mod` + SkuDef + README,
+    fsync+integrity-verified, byte-identical on a no-change override; 1-asset and 13-asset GameObject/macro mods;
+    a hard gate refuses to ship any undeclared/EA asset; inheritFrom bases sliced to single assets carrying their
+    `<Defines>` macro context). **But that diff is *not a loadable standalone mod*** — the in-game launch revealed
+    (finding **[0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)**) that the
+    static `_mod` stream **replaces** `static_common` wholesale (EA's own 1.03 patch ships a *complete* 21,747-asset
+    `Static_mod`; the `.version` postfix selects one complete stream per family), so a *partial* stream crashes at
+    skirmish load. A loadable standalone binary mod needs the full, version-matched base dataset = EA content —
+    a zero-EA **shareable** standalone is therefore not possible. Go-forward: ship the zero-EA diff +
+    **assemble-at-install** recipient-side (keeps the diff zero-EA), or `mod bake` into a complete stream. The
+    builder/diff mechanism (xi:include for new assets, sliced inheritFrom base for overrides) is in
+    **[0015](docs/findings/0015-standalone-overlay-override-needs-sliced-inheritfrom-base.md)**.
+  - ✅ `mod check` — pre-flight validation: dangling references + unknown fields / schema errors with `file:line`,
+    plus per-type schema drift vs the target. Runs **automatically before a bake** (`--no-check` to skip).
   - 📋 base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
     streams (avoids C&C:Online / replay desync).
   - 📋 installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler binary, so

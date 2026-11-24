@@ -229,6 +229,19 @@ Only the first kind is a test; the second is a mirror.
 
 ---
 
+## "Present-but-unfed" ≠ "absent"
+
+A recurring misdiagnosis: a subsystem "doesn't work," and the reflex is to conclude *"X is disabled / not supported in this port"* — a **limitation**. Twice this session that was wrong, and in the same shape:
+
+- **`xi:include`** — a benign startup message (`Could not load XIncludingReader from Mvp.Xml.dll`) read as "XInclude is disabled." Reality: Mvp.Xml is dead on Linux, but a **custom `ResolveXIncludes` handles it, including xpointer** ([0008](../findings/0008-xinclude-xpointer-not-honored.md)). Not absent — *present*.
+- **Macros/expressions** — `ExpressionEval.dll` "disabled" read as "macro expansion is off." Reality: **`ExpressionEvaluator` is present** and does `=$NAME` substitution; the slice had just **starved it of the `#define` definitions** ([0015](../findings/0015-standalone-overlay-override-needs-sliced-inheritfrom-base.md)). Not absent — *unfed*.
+
+**Why it matters:** "absent" and "present-but-unfed" lead to **opposite** next steps. Absent → accept a coverage limitation (or a big port effort). Unfed → a small fix: give the machinery the input it's missing. Concluding "absent" prematurely both *overstates* the limitation and *skips the real fix*.
+
+**The check:** before writing down "X is disabled / unsupported," grep for the machinery. If the class/evaluator/resolver **exists**, the question is not "is it disabled?" but **"what input is it not getting?"** — a dropped include, an unloaded definition, an unwired call site. Present-but-unfed is the default hypothesis until the code is shown to be truly absent or stubbed.
+
+---
+
 ## Fresh context vs shared context — the subagent tradeoff
 
 An observed result worth internalising: a subagent spawned with **no shared context** from its parent produced

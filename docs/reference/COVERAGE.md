@@ -4,6 +4,14 @@ What the toolchain can compile and decompile today, and — type by type — **h
 the bytes Kane's Wrath actually ships**. The numbers here are measured, not asserted; every one is
 reproducible with the harness described at the bottom.
 
+> **⚠ Version caveat (finding [0016](../findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)).**
+> "Byte-exact vs shipped" is only meaningful **relative to the patch version the engine actually loads** — a
+> stream can match `Core/1.0` byte-for-byte and still mismatch the running **1.3** engine's per-type schema
+> hashes (the `DefaultHotKeys` `0x692d0b3a`→`0x12cb83dc` drift that crashed the complete-probe). The numbers below
+> are **not yet version-stamped**; the base they were measured against (the SDK `*_2` manifests) should be
+> confirmed to be the running patch version (1.3 / the patch `Static_mod`), and each figure stamped with it.
+> Until then, read "matches shipped" as "matches the sampled stream," not "matches what the 1.3 engine loads."
+
 **Verification method / date.** Measured 2026-11-24 with the ground-truth gate
 `tools/roundtrip.sh --from-binary <stream.manifest> --only <INSTANCE> --stringhashes <master/StringHashes.xml>`,
 which decompiles a *shipped* linked stream, recompiles the decompiled XML, and byte-compares each asset to the
