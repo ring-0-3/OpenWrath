@@ -558,6 +558,25 @@ def _data_relpath(cfg: dict, abspath: Path) -> str:
     return "DATA:" + str(rel).replace("\\", "/")
 
 
+def _type_drift(cfg: dict, tag: str, target: str, stream: str):
+    """Best-effort: is type `tag` schema-drifted in the target stream vs our compiler? Returns
+    (status, our_hash, [stream_hashes]) or None if it couldn't be determined (never raises —
+    this is advisory). status in {match, drift, mixed, unregistered, absent}."""
+    try:
+        our_h = our_type_hashes(cfg).get(tag)
+        idx = load_stream_index(cfg, target, stream)
+        sh = sorted({e["th"] for e in idx["entries"] if e["type"] == tag})
+    except (SystemExit, Exception):   # advisory — if the stream can't be read, just skip the check
+        return None
+    if not sh:
+        return ("absent", our_h, [])
+    if len(sh) > 1:
+        return ("mixed", our_h, sh)
+    if our_h is None:
+        return ("unregistered", our_h, sh)
+    return (("match" if our_h == sh[0] else "drift"), our_h, sh)
+
+
 def cmd_mod_new(args) -> int:
     """Scaffold a new mod project: a mod.toml + an empty src/ dir."""
     proj = Path(args.project).resolve()
@@ -650,6 +669,22 @@ def cmd_mod_add(args) -> int:
     print(f"added {tag} \"{inst}\" to {proj.name}")
     print(f"  wrote {srcrel}  (inheritFrom-self override — edit the body, then `openwrath mod bake {proj.name}`)")
     print(f"  from  {fp}")
+
+    # Advisory schema-drift check, surfaced here (at add time) rather than discovered at bake time: this
+    # override is authored from the retail schema, so for a type the target stream diverged on, the baked
+    # replace may not match the stream's layout.
+    target = spec.get("target")
+    if target:
+        d = _type_drift(cfg, tag, target, spec.get("stream") or "static_mod")
+        if d and d[0] in ("drift", "mixed"):
+            status, our_h, sh = d
+            shs = "/".join(f"0x{h:08x}" for h in sh)
+            ohs = f"0x{our_h:08x}" if our_h is not None else "—"
+            print()
+            print(f"  ⚠ {tag} is schema-{status} in {target} (stream {shs} vs our {ohs}).")
+            print(f"    This override is authored from the retail schema; for a drifted type the baked replace")
+            print(f"    may not match the stream's layout for {tag} — verify in-game.  (openwrath schema --drift-only)")
+
     print()
     print("current definition (copy the field you want to change into the override body):")
     print("\n".join("    " + l for l in body))

@@ -89,7 +89,8 @@ See `config.example.toml` for the full schema.
       `--depth` / `--type`) so you know *what asset to mod*.
 - [x] `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
       (from the SDK source, so it reads cleanly even for types the decompiler can't walk from the stream),
-      closing the loop: `trace` → `add` → edit a value → `bake`.
+      closing the loop: `trace` → `add` → edit a value → `bake`. `mod add` also **warns at add time** if the
+      asset's type is schema-drifted in the target stream, so you learn it then rather than at bake time.
 - [ ] `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player can drop into
       `Mods/` and run with no OpenWrath installed.
 - [ ] `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line
