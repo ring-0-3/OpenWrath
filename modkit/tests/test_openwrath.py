@@ -407,6 +407,189 @@ def test_default_stringhashes_no_personal_path():
         sb.close()
 
 
+# --- mod package / mod check (logic around the compiler) ---------------------------------
+# These exercise the CI-safe LOGIC of `mod package` / `mod check` — block extraction, inheritFrom
+# slicing, macro context, path rewriting, the zero-EA gate, and the generated SkuDef/README. The
+# compiler-dependent end-to-end (actually emitting an overlay) needs the EA SDK + .NET compiler, so it
+# is proven by hand against real data and recorded in docs/findings/0015, not here (same split as the
+# gen-stringhashes / extract-manifests tests).
+
+_SDK_WEAPON = """\
+<?xml version="1.0" encoding="utf-8"?>
+<AssetDeclaration xmlns="uri:ea.com:eala:asset">
+\t<Tags />
+\t<Includes>
+\t\t<Include type="all" source="DATA:GlobalData/GlobalDefines.xml" />
+\t</Includes>
+\t<Defines>
+\t\t<Define name="MY_AFFECTS" value="SELF ALLIES ENEMIES NEUTRALS" />
+\t</Defines>
+\t<WeaponTemplate id="BaseGun" Name="BaseGun" RadiusDamageAffects="=$MY_AFFECTS">
+\t\t<Nuggets><ProjectileNugget WarheadTemplate="BaseWarhead" /></Nuggets>
+\t</WeaponTemplate>
+\t<WeaponTemplate id="BaseWarhead" Name="BaseWarhead" />
+</AssetDeclaration>
+"""
+
+
+def _write_sdk(root: Path) -> Path:
+    sdk = root / "sdk/KanesWrathXMLFiles"
+    (sdk / "GlobalData").mkdir(parents=True)
+    (sdk / "GlobalData/Weapon.xml").write_text(_SDK_WEAPON, encoding="utf-8")
+    (sdk / "GlobalData/GlobalDefines.xml").write_text(
+        '<?xml version="1.0"?>\n<AssetDeclaration xmlns="uri:ea.com:eala:asset">\n'
+        '\t<Defines>\n\t\t<Define name="GLOBAL_THING" value="7" />\n\t</Defines>\n'
+        '</AssetDeclaration>\n', encoding="utf-8")
+    return sdk
+
+
+def test_toplevel_block_tab_and_space_indent():
+    """_find_toplevel_block must handle both the SDK's tab indent and hand-authored space indent."""
+    tabbed = _SDK_WEAPON.splitlines()
+    got = ow._find_toplevel_block(tabbed, "BaseGun", None)
+    assert got and got[0] == "WeaponTemplate"
+    spaced = ('<?xml version="1.0"?>\n<AssetDeclaration xmlns="uri:ea.com:eala:asset">\n'
+              '  <Tags/>\n  <WeaponTemplate id="Foo" inheritFrom="Foo">\n'
+              '    <FiringDuration MinSeconds="1s" MaxSeconds="1s"/>\n  </WeaponTemplate>\n'
+              '</AssetDeclaration>\n').splitlines()
+    got = ow._find_toplevel_block(spaced, "Foo", None)
+    assert got and got[0] == "WeaponTemplate", got
+    tag, s, e = got
+    block = "\n".join(spaced[s:e + 1])
+    assert "FiringDuration" in block and block.strip().endswith("</WeaponTemplate>")
+
+
+def test_toplevel_block_inline_closed_siblings():
+    """An element that opens AND closes on one line (`<Tag ...></Tag>`, e.g. a bare ArmorTemplate) must be
+    bounded to that line — otherwise its 'block' runs to the next MULTILINE close and swallows every
+    inline-closed sibling in between (the HeavyArmor bug). Tab-indented like the SDK."""
+    lines = ('<?xml version="1.0"?>\n<AssetDeclaration xmlns="uri:ea.com:eala:asset">\n'
+             '\t<Tags />\n'
+             '\t<ArmorTemplate\n\t\tid="NoArmor"\n\t\tDefault="100"></ArmorTemplate>\n'
+             '\t<ArmorTemplate\n\t\tid="HeavyArmor"\n\t\tDefault="50"></ArmorTemplate>\n'
+             '\t<ArmorTemplate\n\t\tid="EliteArmor"\n\t\tDefault="50">\n\t\t<Armor Damage="GUN" Percent="60" />\n\t</ArmorTemplate>\n'
+             '</AssetDeclaration>\n').splitlines()
+    # The inline-closed middle sibling must be found and bounded to its own 3 lines (not swallowed).
+    got = ow._find_toplevel_block(lines, "HeavyArmor", None)
+    assert got is not None, "inline-closed HeavyArmor was swallowed / not found"
+    tag, s, e = got
+    block = lines[s:e + 1]
+    assert tag == "ArmorTemplate" and len(block) == 3, block
+    assert 'id="HeavyArmor"' in "\n".join(block) and "EliteArmor" not in "\n".join(block)
+    # The multiline sibling still bounds correctly (through its own </ArmorTemplate>).
+    tag2, s2, e2 = ow._find_toplevel_block(lines, "EliteArmor", None)
+    assert "<Armor " in "\n".join(lines[s2:e2 + 1]) and lines[e2].strip() == "</ArmorTemplate>"
+
+
+def test_inherit_of():
+    assert ow._inherit_of(['\t<WeaponTemplate id="A" inheritFrom="B">', "\t</WeaponTemplate>"]) == "B"
+    assert ow._inherit_of(['\t<WeaponTemplate id="A"', '\t\tinheritFrom="B" Name="A">']) == "B"
+    assert ow._inherit_of(['\t<WeaponTemplate id="A" />']) is None
+
+
+def test_rewrite_rel_paths():
+    base = Path("/sdk/GDI/Units")
+    out = ow._rewrite_rel_paths(
+        ['<xi:include href="../../Includes/Cap.xml" />',
+         '<Include source="DATA:GlobalData/Weapon.xml" />',
+         '<Include source="ART:Model.w3x" />',
+         '<Include source="/abs/already.xml" />'], base)
+    assert 'href="/sdk/Includes/Cap.xml"' in out[0], out[0]      # relative -> absolute
+    assert 'source="DATA:GlobalData/Weapon.xml"' in out[1]        # DATA: alias untouched
+    assert 'source="ART:Model.w3x"' in out[2]                     # ART: alias untouched
+    assert 'source="/abs/already.xml"' in out[3]                  # absolute untouched
+
+
+def test_collect_defines_recursive():
+    """_collect_defines inlines the file's own <Define> rows AND, transitively, those in the files it
+    <Include>s (GlobalDefines.xml) — so a sliced asset's =$MACRO values resolve. ART:/asset includes
+    contribute nothing (no embedding)."""
+    sdk = _write_sdk(Path(tempfile.mkdtemp(prefix="ow-sdk-")))
+    defs = ow._collect_defines(str(sdk / "GlobalData/Weapon.xml"), sdk)
+    assert any('name="MY_AFFECTS"' in d for d in defs)          # file-local define
+    assert any('name="GLOBAL_THING"' in d for d in defs)        # define pulled transitively from the include
+    assert all("<Include" not in d and "ART:" not in d for d in defs)   # rows only, no include/art lines
+
+
+def test_zero_ea_gate():
+    assert ow._zero_ea_gate({"A", "B"}, {"A", "B"}) == (set(), set())     # clean
+    extra, missing = ow._zero_ea_gate({"A", "EABase"}, {"A"})             # EA asset leaked in
+    assert extra == {"EABase"} and missing == set()
+    extra, missing = ow._zero_ea_gate({"A"}, {"A", "B"})                  # a declared asset dropped
+    assert extra == set() and missing == {"B"}
+
+
+def test_collect_inherit_bases_self_override_and_chain():
+    """A self-override (inheritFrom==id) must slice the BASE from the SDK; a base referenced only as a
+    sibling must NOT be sliced (stays an import); macro context must ride along."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-bases-"))
+    sdk = _write_sdk(tmp)
+    cfg = {"sdk": str(sdk)}
+    declared = [{"tag": "WeaponTemplate", "id": "BaseGun", "inherit": "BaseGun",
+                 "lines": ['\t<WeaponTemplate id="BaseGun" inheritFrom="BaseGun" />'],
+                 "src": str(sdk / "GlobalData/Weapon.xml")}]
+    out = ow._collect_inherit_bases(cfg, declared, tmp)
+    assert out is not None and out.exists()
+    text = out.read_text()
+    assert 'id="BaseGun"' in text                 # the self-override base WAS sliced
+    assert 'id="BaseWarhead"' not in text         # the sibling dep was NOT (stays an import)
+    assert 'name="MY_AFFECTS"' in text            # file-local macro inlined so =$MY_AFFECTS resolves
+    assert 'name="GLOBAL_THING"' in text          # transitively-included define inlined too
+    assert "<Include" not in text                 # defines are inlined, no file re-include (no embedding)
+
+
+def test_collect_inherit_bases_none_when_all_declared():
+    """If every inheritFrom target is itself declared in the mod, there is no SDK base to slice."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-bases2-"))
+    sdk = _write_sdk(tmp)
+    declared = [{"tag": "WeaponTemplate", "id": "NewA", "inherit": "NewB", "lines": [], "src": "x"},
+                {"tag": "WeaponTemplate", "id": "NewB", "inherit": None, "lines": [], "src": "x"}]
+    assert ow._collect_inherit_bases({"sdk": str(sdk)}, declared, tmp) is None
+
+
+def test_assemble_package_source():
+    tmp = Path(tempfile.mkdtemp(prefix="ow-asm-"))
+    declared = [{"tag": "WeaponTemplate", "id": "Foo", "inherit": "Foo",
+                 "lines": ['\t<WeaponTemplate id="Foo" inheritFrom="Foo" />'], "src": str(tmp / "s.xml")}]
+    bases = tmp / "_bases.xml"
+    bases.write_text("<x/>")
+    src = ow._assemble_package_source(tmp, "static", declared, bases)
+    assert src.name == "static.xml"                         # stem -> <stem>_mod stream on compile
+    body = src.read_text()
+    assert 'source="_bases.xml"' in body                    # scoped base include wired in
+    assert 'id="Foo"' in body                               # declared body carried verbatim
+    assert "<Includes>" in body
+
+
+def test_ref_severity_two_condition_scope():
+    """ERROR requires the caller's `verifiable` set — types that are BOTH modeled AND in the loaded
+    reference scope. A ref to such a type is a real dangling ref; anything else is an unverifiable
+    warning (never a false abort). The self-heal is honest: an art type promotes to error only once it is
+    in `verifiable`, i.e. modeled AND its stream loaded — modeling alone (without loading its stream)
+    must NOT promote it, or it would be a false positive (reviewer note, finding 0015)."""
+    verifiable = {"WeaponTemplate", "FXList", "GameObject"}
+    assert ow._ref_severity("FXList", verifiable) == "error"          # modeled + in-scope -> real dangling
+    assert ow._ref_severity("Texture", verifiable) == "warn"          # not verifiable -> never a false abort
+    assert ow._ref_severity("BaseRenderAssetType", verifiable) == "warn"
+    # Texture modeled but its stream NOT loaded -> caller's intersection excludes it -> still a warning.
+    modeled_only = {"WeaponTemplate", "FXList", "GameObject", "Texture"}
+    loaded_scope = {"WeaponTemplate", "FXList", "GameObject"}          # art stream NOT in scope
+    assert ow._ref_severity("Texture", modeled_only & loaded_scope) == "warn"
+    # Only when BOTH hold (modeled AND stream loaded) does it promote:
+    assert ow._ref_severity("Texture", modeled_only & (loaded_scope | {"Texture"})) == "error"
+
+
+def test_skudef_and_registration_line():
+    assert ow._win_mods_skudef_line("MyMod") == (
+        "add-config C:\\users\\steamuser\\Documents\\"
+        + ow.WINE_DOCS_NAME + "\\Mods\\MyMod\\MyMod.skudef")
+    # README names the add-config line + the add-big skudef form
+    tmp = Path(tempfile.mkdtemp(prefix="ow-readme-"))
+    ow._write_pkg_readme(tmp, "MyMod", {}, "static_mod", ["AssetA", "AssetB"])
+    readme = (tmp / "README.txt").read_text()
+    assert "MyMod.skudef" in readme and "AssetA" in readme and "static_mod" in readme
+
+
 # --- runner (used when pytest is absent) -------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

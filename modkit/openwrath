@@ -20,6 +20,8 @@ Subcommands:
   gen-stringhashes   build the master StringHashes.xml from your own SDK (compiles with -scd, merges)
   extract-manifests  extract + RefPack-decompress the base-stream manifests from your installed game
   mod bake      compile a mod's overrides + splice/insert them into a target stream, repack, install
+  mod package   build a self-contained, shareable mod (own big + SkuDef) for Mods/ — ships zero EA content
+  mod check     pre-flight validation (dangling refs / unknown fields / schema drift) with file:line
   mod revert    restore a target mod's big from the last openwrath backup
   inspect <a>   decompile + print ONE asset from the installed stream (what the game actually loads)
   find <text>   list installed assets whose name contains <text> (optionally --type)
@@ -433,17 +435,26 @@ def ensure_stream_cache(big: Path, stream: str, label: str,
     return d, False
 
 
-def compile_source(cfg: dict, source: Path, outdir: Path) -> tuple[Path, Path]:
-    """Compile one override XML; return (stream_manifest, assets_dir)."""
-    import glob
+def _compile_cmd(cfg: dict, source: Path, outdir: Path) -> list[str]:
+    """The .NET compile command for one override/overlay source → a linked `_mod` stream.
+
+    `-bps`/`-rm` make the base streams available so any referenced base asset resolves as an
+    IMPORT (not an embedded local copy); `-cpf:_mod` gives the output its overlay postfix. Shared
+    by `compile_source` (bake), `cmd_mod_package` (overlay), and `cmd_mod_check` (validation) so the
+    one compile invocation is defined once (single source of truth)."""
     bab = Path(cfg["openwrath"]) / "Debug/BinaryAssetBuilder.dll"
     bm = Path(cfg["base_manifests"])
     rm = f'{bm/"global_common_2.manifest"};{bm/"static_common_2.manifest"}'
+    return ["dotnet", str(bab), str(source), f'-dr:{cfg["sdk"]}', f'-data:{cfg["sdk"]}',
+            f"-od:{outdir}", f'-sp:{cfg["schema"]}', f'-bps:{bm/"static_common_2.manifest"}',
+            f"-rm:{rm}", "-ls:true", "-cpf:_mod", "-sc:false", "-bc:false"]
+
+
+def compile_source(cfg: dict, source: Path, outdir: Path) -> tuple[Path, Path]:
+    """Compile one override XML; return (stream_manifest, assets_dir)."""
+    import glob
     outdir.mkdir(parents=True, exist_ok=True)
-    r = _run(["dotnet", str(bab), str(source), f'-dr:{cfg["sdk"]}', f'-data:{cfg["sdk"]}',
-              f"-od:{outdir}", f'-sp:{cfg["schema"]}', f'-bps:{bm/"static_common_2.manifest"}',
-              f"-rm:{rm}", "-ls:true", "-cpf:_mod", "-sc:false", "-bc:false"],
-             capture_output=True, text=True)
+    r = _run(_compile_cmd(cfg, source, outdir), capture_output=True, text=True)
     manifests = glob.glob(str(outdir / "*_mod.manifest"))
     if not manifests:
         sys.exit(f"error: compile produced no stream for {source.name}:\n{r.stdout[-800:]}")
@@ -708,6 +719,14 @@ def cmd_mod_bake(args) -> int:
         sys.exit("error: Kane's Wrath appears to be RUNNING. Baking swaps its data file out from under\n"
                  "       the live game and WILL freeze it. Close the game first, then re-run "
                  "(or pass --force if you know what you're doing).")
+    # Pre-flight validation runs automatically before a bake (dangling refs / unknown fields /
+    # schema drift) so problems surface with file/line up front rather than as a mid-bake crash.
+    if not getattr(args, "no_check", False):
+        print("pre-flight check:")
+        if run_mod_check(cfg, proj, quiet=False):
+            sys.exit("error: pre-flight check found problems (above) — fix them or re-run with "
+                     "--no-check to bake anyway.")
+        print()
     print(f"baking '{name}' -> {target}\n")
 
     work = Path(tempfile.mkdtemp(prefix="openwrath-bake-"))
@@ -835,6 +854,523 @@ def cmd_mod_bake(args) -> int:
         return 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# --- mod package: compile a standalone, zero-EA overlay + its own big + SkuDef -------------
+# A *package* is a self-contained mod a player drops into Mods/ and runs with NO OpenWrath
+# installed: its own `<Name>.big` (carrying one overlay stream, e.g. static_mod) + `<Name>.skudef`
+# (`add-big <Name>.big`). It ships ONLY the user's declared overrides/additions and IMPORTS
+# everything else from the base streams by id (the overlay model, docs/04-...). The hard part is
+# emitting ONLY the declared assets: a whole-file inheritFrom include drags referenced base siblings
+# in as local copies (EA content). We avoid that by giving the compiler a *sliced single-asset*
+# inheritFrom base so siblings stay external imports, and we GATE on it — the emitted id set must
+# equal the declared id set or we refuse to ship (finding 0015). Big integrity is fsync+verified
+# (finding 0007).
+_PKG_NS = ('xmlns="uri:ea.com:eala:asset" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+           'xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:xai="uri:ea.com:eala:asset:instance"')
+_PATH_ALIASES = ("data:", "art:", "audio:", "root:")
+
+
+def _inherit_of(block_lines: list[str]) -> str | None:
+    """The inheritFrom= on an asset block's opening tag (which may span lines up to its '>')."""
+    head = []
+    for ln in block_lines:
+        head.append(ln)
+        if ">" in ln:
+            break
+    m = re.search(r'\binheritFrom="([^"]*)"', "\n".join(head))
+    return m.group(1) if m else None
+
+
+def _declared_blocks(src_path: Path) -> list[dict]:
+    """Every TOP-LEVEL asset declared in a mod source (outside <Includes>/<Tags>), as verbatim
+    text blocks. Reuses `declared_overrides` (which ids) + `_find_toplevel_block` (the exact block),
+    so this is the same block-extraction engine as `inspect --source`/`mod add` — not a re-derivation."""
+    ids = declared_overrides(src_path)
+    lines = Path(src_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    out = []
+    for cid in ids:
+        found = _find_toplevel_block(lines, cid, None)
+        if not found:
+            continue
+        tag, s, e = found
+        block = lines[s:e + 1]
+        out.append({"tag": tag, "id": cid, "inherit": _inherit_of(block),
+                    "lines": block, "src": str(src_path)})
+    return out
+
+
+def _rewrite_rel_paths(block_lines: list[str], base_dir: Path) -> list[str]:
+    """Rewrite non-aliased RELATIVE href=/source= paths to absolute, resolved against base_dir (the
+    original SDK file's directory). A sliced base block is compiled from a temp dir, so its relative
+    xi:include hrefs (e.g. '../../Includes/X.xml', common on GameObjects) would otherwise break.
+    DATA:/ART:/AUDIO:/ROOT: aliases and already-absolute paths are left untouched (finding 0015)."""
+    def repl(m: re.Match) -> str:
+        attr, val = m.group(1), m.group(2)
+        low = val.lower()
+        if low.startswith(_PATH_ALIASES) or val.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", val):
+            return m.group(0)
+        try:
+            return f'{attr}="{(base_dir / val).resolve()}"'
+        except Exception:
+            return m.group(0)
+    return [re.sub(r'\b(href|source)="([^"]*)"', repl, ln) for ln in block_lines]
+
+
+def _grep_sdk_block(sdk: str, inst: str, want_type: str | None = None):
+    """Find+slice a single asset's top-level block from the SDK source (same resolution as
+    `mod add`: grep for id, prefer authoring files over maps). Returns (tag, block_lines, src_file)
+    or None."""
+    import subprocess
+    r = subprocess.run(["grep", "-rlF", f'id="{inst}"', sdk], capture_output=True, text=True)
+    files = [f for f in r.stdout.splitlines() if f]
+    files.sort(key=lambda f: ("/maps/" in f.lower(), f))
+    for fp in files:
+        lines = Path(fp).read_text(encoding="utf-8", errors="replace").splitlines()
+        found = _find_toplevel_block(lines, inst, want_type)
+        if found:
+            tag, s, e = found
+            return tag, lines[s:e + 1], fp
+    return None
+
+
+def _resolve_include_path(val: str, base_dir: Path, sdk: Path) -> Path | None:
+    """Resolve an <Include source> to an on-disk .xml path for define-harvesting. DATA:/ROOT: resolve
+    under the SDK data root; a plain relative path against the including file's dir. ART:/AUDIO: (binary
+    art/audio) are skipped — they hold no <Define>s and must not be pulled in."""
+    low = val.lower()
+    if low.startswith(("art:", "audio:")):
+        return None
+    if low.startswith(("data:", "root:")):
+        p = sdk / val.split(":", 1)[1].lstrip("/\\").replace("\\", "/")
+    elif re.match(r"^[A-Za-z]:[\\/]", val) or val.startswith("/"):
+        p = Path(val)
+    else:
+        p = base_dir / val
+    return p if (p.suffix.lower() == ".xml" and p.exists()) else None
+
+
+def _collect_defines(src_path: str, sdk: Path, seen: set | None = None) -> list[str]:
+    """Every `<Define>` row reachable from a source file — its own `<Defines>` plus, transitively, the
+    defines in the files it `<Include>`s (e.g. GlobalDefines.xml). A sliced asset's `=$MACRO` attribute
+    values are substituted by the compiler's `ExpressionEvaluator` from the document's defines, so the
+    slice must carry them or validation rejects the raw macro name. `=$` macros are pervasive in the SDK,
+    so this matters. We *inline the rows* rather than re-include the files, which both carries the whole
+    reachable define set and avoids pulling any asset/art sibling local (finding 0015)."""
+    seen = seen if seen is not None else set()
+    p = os.path.realpath(src_path)
+    if p in seen or not os.path.exists(p):
+        return []
+    seen.add(p)
+    out: list[str] = []
+    in_defs = False
+    for ln in Path(p).read_text(encoding="utf-8", errors="replace").splitlines():
+        s = ln.strip()
+        if s.startswith("<Defines>"):
+            in_defs = True
+        elif s.startswith("</Defines>"):
+            in_defs = False
+        elif in_defs and s.startswith("<Define"):
+            out.append("\t\t" + s)
+        elif s.startswith("<Include") and "source=" in s:
+            m = re.search(r'source="([^"]*)"', s)
+            inc = _resolve_include_path(m.group(1), Path(p).parent, sdk) if m else None
+            if inc:
+                out += _collect_defines(str(inc), sdk, seen)
+    return out
+
+
+def _collect_inherit_bases(cfg: dict, declared: list[dict], work: Path) -> Path | None:
+    """Write ONE include file holding the sliced inheritFrom bases (and their inheritFrom ancestors)
+    for every declared override whose base is NOT itself declared in the mod. Returns the file path,
+    or None if nothing to slice (all declarations are brand-new / self-contained). These are tentative
+    base instances for inheritance only — they are not referenced at runtime, so they are NOT emitted
+    into the overlay (only the user's declared assets are). Their referenced siblings stay external →
+    imports, which is the whole point (finding 0015). The macro context of each source file sliced from
+    is carried alongside so `=$MACRO` base values still resolve."""
+    (sdk,) = _need(cfg, "sdk")
+    sdk_path = Path(sdk)
+    declared_ids = {b["id"] for b in declared}
+    visited: set = set()
+    sliced: list[list[str]] = []
+    ctx_files: set = set()
+    ctx_defs: list[str] = []
+    seen_def: set = set()
+
+    def add_context(fp: str) -> None:
+        if fp in ctx_files:
+            return
+        ctx_files.add(fp)
+        for l in _collect_defines(fp, sdk_path):     # inline all reachable <Define> rows, deduped by name
+            m = re.search(r'name="([^"]*)"', l)
+            nm = m.group(1) if m else l.strip()
+            if nm not in seen_def:
+                seen_def.add(nm)
+                ctx_defs.append(l)
+    # Seed from each declared asset's inheritFrom. A SELF-override (`inheritFrom="X"` on asset X) is an
+    # override of the BASE asset X, so its base must come from the SDK even though X is also declared.
+    # A derivation from a different id is sliced only if that base is NOT itself a mod-declared asset
+    # (a mod-local base serves its own children).
+    queue = [b["inherit"] for b in declared
+             if b["inherit"] and (b["inherit"] == b["id"] or b["inherit"] not in declared_ids)]
+    while queue:
+        bid = queue.pop()
+        if not bid or bid in visited:
+            continue
+        visited.add(bid)
+        got = _grep_sdk_block(sdk, bid)
+        if not got:
+            vlog(f"  inheritFrom base '{bid}' not found in SDK — leaving the compiler to resolve/error")
+            continue
+        _tag, block, fp = got
+        add_context(fp)
+        sliced.append(_rewrite_rel_paths(block, Path(fp).parent))
+        anc = _inherit_of(block)   # follow the chain; a mod-local ancestor serves itself (don't slice)
+        if anc and anc != bid and anc not in declared_ids and anc not in visited:
+            queue.append(anc)
+    if not sliced:
+        return None
+    parts = ['<?xml version="1.0" encoding="utf-8"?>', f"<AssetDeclaration {_PKG_NS}>", "\t<Tags/>"]
+    if ctx_defs:
+        parts += ["\t<Defines>", *ctx_defs, "\t</Defines>"]
+    for b in sliced:
+        parts += b + [""]
+    parts += ["</AssetDeclaration>", ""]
+    out = work / "_bases.xml"
+    out.write_text("\n".join(parts), encoding="utf-8")
+    return out
+
+
+def _assemble_package_source(work: Path, stem: str, declared: list[dict],
+                             bases: Path | None) -> Path:
+    """Build the single packaging source compiled into the overlay: our scoped <Includes> (the sliced
+    bases, if any) + every declared asset body verbatim (relative paths rewritten absolute). The
+    user's own <Includes> are intentionally dropped and replaced by the scoped ones."""
+    incs = (["\t<Includes>", f'\t\t<Include type="instance" source="{bases.name}" />', "\t</Includes>"]
+            if bases is not None else [])   # omit an empty <Includes> (all-new mod has no base to slice)
+    body: list[str] = []
+    for b in declared:
+        body += _rewrite_rel_paths(b["lines"], Path(b["src"]).parent) + [""]
+    src = work / f"{stem}.xml"
+    src.write_text("\n".join([
+        '<?xml version="1.0" encoding="utf-8"?>', f"<AssetDeclaration {_PKG_NS}>", "\t<Tags/>",
+        *incs, "", *body, "</AssetDeclaration>", ""]), encoding="utf-8")
+    return src
+
+
+def _zero_ea_gate(emitted: set, declared: set) -> tuple[set, set]:
+    """The zero-EA packaging invariant as a pure check: returns (extra, missing) where `extra` are
+    emitted ids the user never declared (EA/base content that leaked in → must refuse) and `missing`
+    are declared ids that failed to compile. A clean package has both empty (finding 0015)."""
+    return emitted - declared, declared - emitted
+
+
+def _win_mods_skudef_line(name: str) -> str:
+    """The master-SkuDef `add-config` line that activates this mod. The game resolves it inside its
+    own wine view, so the fixed `C:\\users\\steamuser\\Documents\\...` form is correct on every host
+    (it mirrors the lines the stock launcher writes for GodMode / SecondIsomer)."""
+    return (f"add-config C:\\users\\steamuser\\Documents\\{WINE_DOCS_NAME}"
+            f"\\Mods\\{name}\\{name}.skudef")
+
+
+def _write_pkg_readme(outdir: Path, name: str, cfg: dict, stream: str, ids: list[str]) -> None:
+    lines = [
+        f"{name} — a Kane's Wrath mod packaged with OpenWrath", "=" * 52, "",
+        "Self-contained mod: it contains ONLY this mod's own asset overrides/additions",
+        "and imports everything else from your installed base game. It ships zero EA/game",
+        f"content and needs no OpenWrath to run. Overlay stream: data\\{stream}.", "",
+        f"Assets in this mod ({len(ids)}):", *[f"  - {i}" for i in ids], "",
+        "INSTALL", "-------",
+        f"1. Copy this '{name}' folder into your Kane's Wrath Mods directory, so you have:",
+        f"     Mods/{name}/{name}.big",
+        f"     Mods/{name}/{name}.skudef", "",
+        "2. Open your master SkuDef (CNC3EP1_<lang>_<version>.SkuDef in the game install",
+        "   folder) and add this line next to the other add-config lines:",
+        f"     {_win_mods_skudef_line(name)}", "",
+        "3. Launch Kane's Wrath. To uninstall: remove that line (and this folder).", "",
+        "Built with OpenWrath — a native-Linux, open Kane's Wrath modding toolchain.", ""]
+    (outdir / "README.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _print_registration(cfg: dict, name: str, installed: Path | None) -> None:
+    print("\n  To activate (the player needs no OpenWrath — only their own game):")
+    step = 1
+    if installed is None:
+        print(f"    {step}. Copy the '{name}' folder into your Mods directory:")
+        md = cfg.get("mods_dir") or "<your Mods dir>"
+        print(f"         {md}/{name}/")
+        step += 1
+    print(f"    {step}. Add this line to your master SkuDef so the launcher loads the mod:")
+    print(f"         {_win_mods_skudef_line(name)}")
+    if cfg.get("install_skudef"):
+        print(f"       (your master SkuDef: {cfg['install_skudef']})")
+    step += 1
+    print(f"    {step}. Launch Kane's Wrath. Remove the line to deactivate. "
+          "(Full steps in README.txt.)")
+
+
+def cmd_mod_package(args) -> int:
+    import tempfile, shutil
+    proj = Path(args.project).resolve()
+    spec = _read_mod_spec(proj)
+    name = spec.get("name", proj.name)
+    sources = [proj / s for s in spec.get("sources", [])] or sys.exit("error: mod.toml needs sources")
+    stream = args.stream or spec.get("stream") or "static_mod"
+    stem = stream[:-4] if stream.endswith("_mod") else stream   # source stem -> <stem>_mod stream
+
+    cfg = read_config()
+    _need(cfg, "openwrath", "sdk", "base_manifests", "schema")
+
+    declared: list[dict] = []
+    for src in sources:
+        if not src.exists():
+            sys.exit(f"error: source not found: {src}")
+        declared += _declared_blocks(src)
+    if not declared:
+        sys.exit("error: no top-level asset declarations found in the mod sources.")
+    declared_ids = {b["id"] for b in declared}
+    print(f"packaging '{name}' — {len(declared)} asset(s) into overlay stream '{stream}'")
+    print(f"  assets: {', '.join(sorted(declared_ids))}\n")
+
+    work = Path(tempfile.mkdtemp(prefix="openwrath-pkg-"))
+    try:
+        # 1. scoped compile: sliced inheritFrom bases (so deps stay imports) + declared bodies
+        bases = _collect_inherit_bases(cfg, declared, work)
+        pkg_src = _assemble_package_source(work, stem, declared, bases)
+        mf, _assets = compile_source(cfg, pkg_src, work / "compile")
+        produced = mf.stem                       # e.g. static_mod
+        streamdir = mf.parent
+
+        # 2. ZERO-EA GATE (finding 0015): emitted ids MUST equal declared ids
+        emitted = {(e["name"] or "").split(":", 1)[-1] for e in parse_manifest(str(mf))}
+        extra, missing = _zero_ea_gate(emitted, declared_ids)
+        if extra:
+            sys.exit(
+                "error: ZERO-EA GATE FAILED — the overlay would embed asset(s) you did not declare "
+                "(EA/base content):\n       " + ", ".join(sorted(extra)) +
+                "\n       An inheritFrom base dragged a referenced sibling in as a local copy. "
+                "Refusing to\n       ship EA content. Please report this with the mod sources "
+                "(see docs/findings/0015).")
+        if missing:
+            sys.exit("error: these declared assets did not compile into the overlay:\n       "
+                     + ", ".join(sorted(missing)) +
+                     f"\n       Run `openwrath mod check {proj.name}` to see why.")
+
+        parts = {}
+        for ext in _STREAM_EXTS:
+            p = streamdir / f"{produced}.{ext}"
+            if not p.exists():
+                sys.exit(f"error: compile did not produce {produced}.{ext}")
+            parts[ext] = p
+
+        # 3. pack the standalone big (reuse pytools/pack_big), then fsync + integrity-verify (0007)
+        outdir = Path(args.out).resolve() if args.out else (proj / "dist" / name)
+        outdir.mkdir(parents=True, exist_ok=True)
+        bigpath = outdir / f"{name}.big"
+        sys.path.insert(0, str(Path(cfg["openwrath"]) / "pytools"))
+        import pack_big
+        entries = [(f"data\\{stream}.{ext}", parts[ext].read_bytes()) for ext in _STREAM_EXTS]
+        # Overlay LOAD HANDSHAKE (finding 0015): the engine discovers a mod overlay via a
+        # `data\<family>.version` file whose CONTENT is the stream postfix — e.g. `data\static.version` =
+        # "_mod\n" tells it to load `static` + `_mod` = `static_mod` over the base `static_common`.
+        # SecondIsomer ships exactly these; without it the engine won't load our overlay. The stream is
+        # <family><postfix>; we emit the version file for that split.
+        if stream.endswith("_mod"):
+            entries.append((f"data\\{stem}.version", b"_mod\n"))   # family=stem, postfix=_mod
+        else:
+            print(f"  ⚠ stream '{stream}' lacks the '_mod' overlay postfix — the engine's .version "
+                  f"handshake expects <family>_mod, so the mod may not load. Prefer a *_mod stream name.")
+        pack_big.pack(str(bigpath), entries)
+        with open(bigpath, "rb") as fh:
+            os.fsync(fh.fileno())
+        if not big_is_complete(bigpath):
+            sys.exit("error: the packed big failed its integrity check (not a complete BIG4) — "
+                     "refusing. Please retry.")
+
+        # 4. the mod's own SkuDef + a README with install/registration steps
+        (outdir / f"{name}.skudef").write_text(f"add-big {name}.big\n", encoding="utf-8")
+        _write_pkg_readme(outdir, name, cfg, stream, sorted(declared_ids))
+
+        # 5. optional: drop the mod folder straight into Mods/ (owned folder; never touches EA files)
+        installed = None
+        if args.install:
+            (mods,) = _need(cfg, "mods_dir")
+            if game_running() and not args.force:
+                sys.exit("error: Kane's Wrath appears to be RUNNING — close it before --install "
+                         "(or pass --force).")
+            dest = Path(mods) / name
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bigpath, dest / f"{name}.big")
+            with open(dest / f"{name}.big", "rb") as fh:
+                os.fsync(fh.fileno())
+            if not big_is_complete(dest / f"{name}.big"):
+                sys.exit("error: the installed big failed its integrity check — refusing.")
+            shutil.copy2(outdir / f"{name}.skudef", dest / f"{name}.skudef")
+            installed = dest
+
+        print(f"\n  ✓ packaged {len(declared_ids)} asset(s) — zero EA content (gate passed).")
+        print(f"  package: {outdir}")
+        print(f"    {name}.big      ({bigpath.stat().st_size:,} bytes; stream data\\{stream})")
+        print(f"    {name}.skudef   (add-big {name}.big)")
+        print(f"    README.txt")
+        if installed:
+            print(f"  installed to:  {installed}")
+        _print_registration(cfg, name, installed)
+        return 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# --- mod check: pre-flight validation (dangling refs / unknown fields / schema drift) -----
+# Benign startup/no-op notices to ignore. "Treating it as empty" covers the art/W3X file-not-found
+# notices (ART assets live in art streams not loaded for a gameplay compile; they resolve at runtime),
+# which the compiler itself continues past.
+_BENIGN_DIAG = ("XIncludingReader", "ExpressionEvaluator", "AudioCompiler", "linux-port",
+                "Base patch manifest", "Cached session data", "Treating it as empty")
+
+
+def _loaded_reference_types(cfg: dict) -> set:
+    """Type names actually present in the reference manifests the check loads (`-rm`: global_common_2 +
+    static_common_2) — i.e. the types whose owning streams ARE in the check's reference scope. Empty if
+    the manifests can't be read (→ everything degrades to an unverifiable warning, never a false abort)."""
+    bm = Path(cfg.get("base_manifests") or "")
+    types: set = set()
+    for s in BASE_STREAMS:
+        p = bm / f"{s}.manifest"
+        if p.exists():
+            for e in parse_manifest(str(p)):
+                nm = e.get("name")
+                if nm and ":" in nm:
+                    types.add(nm.split(":", 1)[0])
+    return types
+
+
+def _ref_severity(ref_type: str, verifiable_types: set) -> str:
+    """Severity for an unresolved reference, scope-driven (finding 0015 / reviewer note). ERROR requires
+    BOTH halves of the honest condition, pre-combined by the caller into `verifiable_types`: the type is
+    (a) MODELED by OpenWrath AND (b) present in the loaded reference scope — only then is a missing
+    instance a genuine dangling reference. Otherwise (unmodeled, OR modeled-but-its-stream-not-loaded) the
+    ref is unverifiable → 'warn', never a false abort. Pure, so the contract is unit-tested without the
+    compiler. NOTE the self-heal needs BOTH: modeling an art type is necessary but **not sufficient** —
+    its art stream must also enter the reference scope, or a modeled-but-unloaded art ref would flip to a
+    false positive (see the promotion checklist in finding 0015)."""
+    return "error" if ref_type in verifiable_types else "warn"
+
+
+def _find_id_line(src: Path, inst: str) -> int:
+    """1-based line of id="inst" in src (best-effort; 0 if absent)."""
+    try:
+        for i, ln in enumerate(src.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if f'id="{inst}"' in ln:
+                return i
+    except OSError:
+        pass
+    return 0
+
+
+def _check_sources(cfg: dict, sources: list[Path], work: Path) -> list[tuple]:
+    """Validate each source by compiling it and parsing diagnostics. Returns a list of
+    (severity, file, line, message). Reuses `_compile_cmd` so validation sees exactly what a bake
+    compiles. Dangling references surface as the compiler's 'Unknown asset ... referenced from ...'
+    warnings; schema/unknown-field problems surface as Critical/Error lines (benign startup
+    notices filtered).
+
+    The dangling-ref severity is **scope-driven, not category-driven**. An unknown ref is an ERROR only
+    when its target type is *verifiable here* = MODELED by OpenWrath (`our_type_hashes`) **and** present in
+    the loaded reference manifests (its owning stream is in scope). Both halves matter: art/texture/audio
+    types are unmodeled today AND their streams aren't loaded, so their refs are *unverifiable* → WARNING,
+    never a false abort. Computing the intersection (not just "modeled") keeps the self-heal honest — when
+    an art type is modeled, its refs only promote to errors once its stream is ALSO added to the reference
+    scope; model-only would otherwise re-create the false positive (finding 0015)."""
+    verifiable = set(our_type_hashes(cfg)) & _loaded_reference_types(cfg)
+    issues: list[tuple] = []
+    for src in sources:
+        if not src.exists():
+            issues.append(("error", str(src), 0, "source file not found"))
+            continue
+        r = _run(_compile_cmd(cfg, src, work / src.stem), capture_output=True, text=True)
+        text = (r.stdout or "") + (r.stderr or "")
+        for m in re.finditer(r"Unknown asset '([^']*)' referenced from '([^']*)'", text):
+            ref, frm = m.group(1), m.group(2)
+            frm_inst = frm.split(":", 1)[-1]
+            ref_type = ref.split(":", 1)[0]
+            sev = _ref_severity(ref_type, verifiable)
+            note = "" if sev == "error" else " (unverifiable — type's stream is outside mod check's reference scope)"
+            issues.append((sev, str(src), _find_id_line(src, frm_inst),
+                           f"dangling reference: '{frm}' points at unknown asset '{ref}'" + note))
+        for m in re.finditer(r"(?:Critical|Error): (.+)", text):
+            msg = m.group(1).strip()
+            if any(b in msg for b in _BENIGN_DIAG):
+                continue
+            line = 0
+            idm = re.search(r"[A-Za-z]+:([A-Za-z0-9_]+)", msg)   # a Type:Instance named in the message
+            if idm:
+                line = _find_id_line(src, idm.group(1))
+            issues.append(("error", str(src), line, msg))
+    return issues
+
+
+def _check_schema_drift(cfg: dict, declared: list[dict], target: str | None,
+                        stream: str | None) -> list[tuple]:
+    """Advisory drift check per declared type against the target stream (reuses `_type_drift`)."""
+    out: list[tuple] = []
+    if not target:
+        return out
+    seen: set = set()
+    for b in declared:
+        tag = b["tag"]
+        if tag in seen:
+            continue
+        seen.add(tag)
+        d = _type_drift(cfg, tag, target, stream or "static_mod")
+        if d and d[0] in ("drift", "mixed"):
+            status, our_h, sh = d
+            shs = "/".join(f"0x{h:08x}" for h in sh)
+            out.append(("warn", b["src"], _find_id_line(Path(b["src"]), b["id"]),
+                        f"{tag} is schema-{status} in {target} (stream {shs} vs our "
+                        f"0x{our_h:08x})" if our_h is not None else
+                        f"{tag} is schema-{status} in {target} (stream {shs})"))
+    return out
+
+
+def run_mod_check(cfg: dict, proj: Path, *, quiet: bool = False) -> int:
+    """Shared pre-flight: validate a project's sources + schema drift. Returns the error count
+    (warnings don't count). Used by `mod check` and automatically before `mod bake`."""
+    import tempfile, shutil
+    spec = _read_mod_spec(proj)
+    sources = [proj / s for s in spec.get("sources", [])]
+    if not sources:
+        sys.exit("error: mod.toml needs sources")
+    declared: list[dict] = []
+    for src in sources:
+        if src.exists():
+            declared += _declared_blocks(src)
+    work = Path(tempfile.mkdtemp(prefix="openwrath-check-"))
+    try:
+        issues = _check_sources(cfg, sources, work)
+        issues += _check_schema_drift(cfg, declared, spec.get("target"), spec.get("stream"))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    errs = sum(1 for sev, *_ in issues if sev == "error")
+    if not issues:
+        if not quiet:
+            print(f"  ✓ mod check: {len(declared)} asset(s), no problems found.")
+        return 0
+    issues.sort(key=lambda t: (t[0] != "error", t[1], t[2]))
+    for sev, f, line, msg in issues:
+        loc = f"{f}:{line}" if line else f
+        mark = "error" if sev == "error" else "warn "
+        print(f"  [{mark}] {loc}: {msg}")
+    print(f"\n  {errs} error(s), {len(issues) - errs} warning(s).")
+    return errs
+
+
+def cmd_mod_check(args) -> int:
+    cfg = read_config()
+    _need(cfg, "openwrath", "sdk", "base_manifests", "schema")
+    proj = Path(args.project).resolve()
+    print(f"checking '{proj.name}'\n")
+    return 1 if run_mod_check(cfg, proj) else 0
 
 
 def cmd_mod_revert(args) -> int:
@@ -1051,13 +1587,26 @@ def _default_stringhashes(cfg: dict) -> str | None:
     return str(fallback) if fallback.exists() else None
 
 
+def _toplevel_indent(lines: list[str]) -> str:
+    """The leading-whitespace prefix of a direct child of <AssetDeclaration>, detected from the first
+    indented element line (the SDK uses a tab; hand-authored sources may use spaces). This keeps the
+    top-level block extractor indentation-agnostic without widening it to match nested elements."""
+    for ln in lines:
+        m = re.match(r"^([ \t]+)<[A-Za-z]", ln)
+        if m:
+            return m.group(1)
+    return "\t"
+
+
 def _find_toplevel_block(lines: list[str], inst: str, want_type: str | None):
-    """Find the enclosing TOP-LEVEL asset element (a direct, one-tab-indented child of
-    <AssetDeclaration>) whose id attribute == inst (optionally of tag == want_type).
+    """Find the enclosing TOP-LEVEL asset element (a direct child of <AssetDeclaration>, at the
+    document's one-level indent) whose id attribute == inst (optionally of tag == want_type).
     Returns (tag, start_line, end_line) inclusive, or None. Line-based so original formatting
     and comments are preserved verbatim; this also rejects nested references (e.g. a map that
-    merely places the object at deeper indentation)."""
-    open_re = re.compile(r"^\t<([A-Za-z_][\w.]*)")
+    merely places the object at deeper indentation). The indent is detected per-file so tab- and
+    space-indented sources both work."""
+    indent = _toplevel_indent(lines)
+    open_re = re.compile(r"^%s<([A-Za-z_][\w.]*)" % re.escape(indent))
     n = len(lines)
     i = 0
     while i < n:
@@ -1082,10 +1631,14 @@ def _find_toplevel_block(lines: list[str], inst: str, want_type: str | None):
             continue
         idm = re.search(r'\bid="([^"]*)"', "\n".join(otext))
         this_id = idm.group(1) if idm else None
-        if self_closing:
+        # An element can also close on the SAME line it opens — either self-closing (`.../>`) or with an
+        # inline end tag (`<Tag ...></Tag>`, e.g. a bare ArmorTemplate). Without this, an inline-closed
+        # element's "block" would run forward to the next *multiline* close, swallowing every inline-closed
+        # sibling in between (so they'd never be found).
+        if self_closing or f"</{tag}>" in lines[j]:
             end = j
         else:
-            close_re = re.compile(r"^\t</%s>\s*$" % re.escape(tag))
+            close_re = re.compile(r"^%s</%s>\s*$" % (re.escape(indent), re.escape(tag)))
             k = j + 1
             while k < n and not close_re.match(lines[k]):
                 k += 1
@@ -1781,6 +2334,8 @@ def main() -> int:
                        help="compile a mod's overrides + splice them into its target stream")
     b.add_argument("project", help="path to the mod project dir (contains mod.toml)")
     b.add_argument("--force", action="store_true", help="bake even if the game appears to be running")
+    b.add_argument("--no-check", dest="no_check", action="store_true",
+                   help="skip the automatic pre-flight validation (dangling refs / unknown fields)")
     b.add_argument("--adopt-schema", dest="adopt_schema", action="store_true",
                    help="INSERT a new asset of a drifted type by stamping the target stream's schema hash "
                         "for that type (instead of our compiler's). Needed to add assets of types the target "
@@ -1804,6 +2359,20 @@ def main() -> int:
     ad.add_argument("--type", help="restrict to an asset type (disambiguates a shared name)")
     ad.add_argument("--force", action="store_true", help="overwrite an existing override file")
     ad.set_defaults(func=cmd_mod_add)
+    pk = mod.add_parser("package", parents=[common],
+                        help="produce a self-contained, shareable mod (own big + SkuDef) for Mods/")
+    pk.add_argument("project", help="path to the mod project dir (contains mod.toml)")
+    pk.add_argument("--stream", help="overlay stream name (default: mod.toml stream, else static_mod)")
+    pk.add_argument("--out", help="output dir for the package (default: <project>/dist/<name>)")
+    pk.add_argument("--install", action="store_true",
+                    help="also copy the package into your Mods/ dir (still needs the master-SkuDef "
+                         "add-config line printed at the end to activate)")
+    pk.add_argument("--force", action="store_true", help="install even if the game appears to be running")
+    pk.set_defaults(func=cmd_mod_package)
+    ck = mod.add_parser("check", parents=[common],
+                        help="pre-flight validation (dangling refs / unknown fields / schema drift)")
+    ck.add_argument("project", help="path to the mod project dir (contains mod.toml)")
+    ck.set_defaults(func=cmd_mod_check)
 
     # discovery commands (read the installed stream; help you find what to mod + what it touches)
     def _disc(name, help):

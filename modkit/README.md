@@ -23,6 +23,8 @@ modkit/openwrath init                # guided setup: detect + confirm bring-your
 modkit/openwrath show                # print the resolved config and flag anything missing or moved
 modkit/openwrath mod bake <project>  # compile a mod's overrides + splice them into its target stream + install
 modkit/openwrath mod revert <target> # restore a target's big from the last openwrath backup
+modkit/openwrath mod check <project>   # pre-flight: dangling refs / unknown fields / schema drift (file:line)
+modkit/openwrath mod package <project> # build a zero-EA overlay DIFF (not yet a loadable standalone — see docs/findings/0016)
 ```
 
 **`init` is the one command to start with.** It runs auto-detection, then for each bring-your-own
@@ -91,10 +93,22 @@ See `config.example.toml` for the full schema.
       (from the SDK source, so it reads cleanly even for types the decompiler can't walk from the stream),
       closing the loop: `trace` → `add` → edit a value → `bake`. `mod add` also **warns at add time** if the
       asset's type is schema-drifted in the target stream, so you learn it then rather than at bake time.
-- [ ] `mod package` — produce a self-contained, shareable mod (its own big + SkuDef) a player can drop into
-      `Mods/` and run with no OpenWrath installed.
-- [ ] `mod check` — pre-flight validation (dangling references, unknown fields, schema drift) with file/line
-      messages, run automatically before a bake.
+- [~] `mod package` — builds a **correct, zero-EA overlay diff** (a `static_mod` carrying only your declared
+      overrides/additions and *importing* the rest by id; inheritFrom bases sliced to single assets carrying their
+      `<Defines>` macro context so no EA sibling embeds; a hard gate refuses any undeclared/EA asset; fsync +
+      integrity-verified, `docs/findings/0007`; byte-identical on a no-change override). **It is NOT yet a loadable
+      standalone mod:** the in-game launch showed the static `_mod` stream *replaces* `static_common` and must be
+      **complete and version-matched** (finding `docs/findings/0016`), so a partial standalone crashes. A zero-EA
+      *shareable* standalone binary mod isn't possible on retail KW; the loadable paths are **diff +
+      assemble-at-install** (keeps the shared artifact zero-EA) or `mod bake` into a complete stream. See
+      `docs/findings/0015` (the diff builder) and `docs/findings/0016` (why it can't drop in as-is).
+- [x] `mod check` — pre-flight validation: **dangling references** and **unknown fields / schema errors** with
+      `file:line` messages, plus per-type **schema drift** vs the target. Runs **automatically before a bake**
+      (skip with `--no-check`), or on its own: `openwrath mod check <project>`. Dangling-ref severity is
+      **scope-driven**: a missing ref to a type OpenWrath *models* (lives fully in the gameplay streams the check
+      loads) is an **error**; a ref to an unmodeled type (Texture / W3D / audio, whose streams are outside the
+      check's reference scope) is an **unverifiable warning** — so it never false-aborts on runtime art imports,
+      and *self-heals* (those refs promote to errors automatically once their types are modeled).
 - [ ] base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
       streams (avoids C&C:Online / replay desync).
 - [ ] installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler, so setup is
