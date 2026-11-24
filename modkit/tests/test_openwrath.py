@@ -337,6 +337,18 @@ def test_refpack_roundtrip():
         assert unsize == len(blob)
 
 
+def test_is_refpack_all_variants():
+    """is_refpack discriminates on the 0xFB signature byte, NOT the flags byte — so every lawful flags
+    variant (0x10/0x11/0x90/0x91) is recognized and non-RefPack input is rejected. Guards finding 0012:
+    the overfit-to-sampled-flags bug (a 0x91 stream must not slip through)."""
+    sys.path.insert(0, str(ow.LIB))
+    import refpack
+    for flags in (0x10, 0x11, 0x90, 0x91):
+        assert refpack.is_refpack(bytes([flags, 0xFB, 0, 0, 0, 0])), f"flags {flags:#x} not recognized"
+    for not_rp in (b"", b"\xfb", b"\x00\x00manifest", b"\x10\xfa", b"\x90\x00"):
+        assert not refpack.is_refpack(not_rp), f"false positive on {not_rp!r}"
+
+
 def test_extract_manifests():
     """extract-manifests: finding the base-stream member in a .big, RefPack-decompressing it, and
     placing it under base_manifests + updating the config. Uses a synthetic BIG4 + literal RefPack

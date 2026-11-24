@@ -1,6 +1,14 @@
 # 0012 — RefPack manifest detection only matches the `0x10` variant, so other variants still misreport as Xbox360
 
-**Status:** Verified (fix pending) · 2026-11-24
+**Status:** Resolved · 2026-11-24
+
+> **Resolution.** Discrimination now turns on the `0xFB` signature, not a sampled flags value. C#: a single
+> authority `source/BinaryAssetBuilder.Decompiler/Containers/RefPack.cs` (`IsRefPack` = `data[1] == 0xFB`),
+> consumed by `Manifest.cs`; the "0x10FB magic" wording is corrected to "0xFB signature". Python: `is_refpack()`
+> added to the canonical `modkit/lib/refpack.py` and consumed at both `modkit/openwrath` detection sites (which
+> previously tested the flags byte against `{0x10,0x90,0x11}` — the same overfit, and it missed `0x91`); the
+> byte-identical orphan `pytools/refpack.py` (zero importers) was deleted so the rule has one home per language.
+> Guarded by `test_is_refpack_all_variants` (all four flags variants recognized, non-RefPack rejected).
 
 > Like [0008](0008-xinclude-xpointer-not-honored.md) and [0009](0009-decompiler-logiccommand-instance-read-desync.md),
 > this is about **our own tool** (the decompiler's manifest reader), not a fact about the game's data format —

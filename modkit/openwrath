@@ -1211,7 +1211,7 @@ def cmd_verify(args) -> int:
             if not src.exists():
                 continue
             data = src.read_bytes()
-            if data[:1] in (b"\x10", b"\x90", b"\x11"):
+            if refpack.is_refpack(data):
                 out, _ = refpack.decompress(data)
                 vlog(f"  refpack {ext}: {len(data)} -> {len(out)} bytes")
             else:
@@ -1508,7 +1508,7 @@ def cmd_extract_manifests(args) -> int:
         with open(big, "rb") as f:
             f.seek(foff)
             data = f.read(fsize)
-        if data[:1] in (b"\x10", b"\x90", b"\x11"):     # RefPack-compressed in the big
+        if refpack.is_refpack(data):                    # RefPack-compressed in the big (0xFB signature)
             data, _ = refpack.decompress(data)
         (out / member).write_bytes(data)
         done.append(stream)

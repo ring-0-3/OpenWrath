@@ -12,6 +12,15 @@ import sys
 #     field, so the actual compressed data starts at byte offset 6 (2 signature + 4 size). The
 #     classic reading (size_len=3, skip a 3-byte compressed size) is wrong for this variant.
 
+def is_refpack(data):
+    """The single authority for 'is this a RefPack stream'. RefPack data begins with a 2-byte
+    signature [flags][0xFB]: the SIGNATURE is the second byte (0xFB); the first byte is a flags byte
+    that legitimately varies (0x10/0x11/0x90/0x91). Discriminate on 0xFB, never on a sampled flags
+    value — a lawful variant whose flags byte you didn't sample would otherwise slip through
+    (finding 0012). Mirror of the C# Containers.RefPack.IsRefPack."""
+    return len(data) >= 2 and data[1] == 0xFB
+
+
 def decompress(data):
     pos = 0
     flags = data[pos]; magic = data[pos + 1]; pos += 2
