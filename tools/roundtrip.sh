@@ -34,6 +34,11 @@ DR="${KW_DATAROOT:-$HOME/kw-mod-sdk/KanesWrathXMLFiles}"
 BM="${KW_BASEMANIFESTS:-$HOME/kw-mod-sdk/base-manifests}"
 RM="$BM/global_common_2.manifest;$BM/static_common_2.manifest;$BM/global_english_2.manifest"
 
+# Input-integrity preflight: once inputs.sha256 is committed, refuse to run on drifted BYO inputs so a
+# "byte-exact" result can never silently rest on a mutated input (finding 0013/0014). No-op until then.
+source "$ROOT/tools/verify-inputs-preflight.sh"
+verify_inputs_preflight
+
 MODE=source
 STREAM_MF=""
 if [[ "${1:-}" == "--from-binary" ]]; then

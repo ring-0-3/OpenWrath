@@ -21,6 +21,11 @@ BM="${KW_BASEMANIFESTS:?set KW_BASEMANIFESTS (source tools/dev-env.sh)}"
 RM="$BM/global_common_2.manifest;$BM/static_common_2.manifest;$BM/global_english_2.manifest"
 export DOTNET_ROLL_FORWARD=LatestMajor DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 
+# Input-integrity preflight (once per corpus run): refuse on drifted BYO inputs so a corpus-wide
+# "byte-exact" tally can never rest on a mutated input (finding 0013/0014). No-op until inputs.sha256 lands.
+source "$ROOT/tools/verify-inputs-preflight.sh"
+verify_inputs_preflight
+
 RESULTS="${CORPUS_OUT:-$(mktemp)}"; : > "$RESULTS"
 FILES=("$@")
 echo "corpus: ${#FILES[@]} source files; results -> $RESULTS"

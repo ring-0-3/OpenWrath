@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Input-integrity preflight for OpenWrath's bring-your-own (BYO) data.
+
+The round-trip harness proves our OUTPUT matches shipped bytes, but nothing checks that the INPUTS
+(schemas, base-stream manifests) are the pristine ground truth the oracle silently assumes. That
+assumption is the hole finding 0013 fell through: a BYO schema was edited in place and a "verified"
+result then quietly rested on the edit. This tool closes it, symmetric with the output gate.
+
+  tools/verify-inputs.py --baseline     # (re)generate inputs.sha256 from the resolved BYO set
+  tools/verify-inputs.py                 # verify the BYO set against inputs.sha256; nonzero on drift
+
+inputs.sha256 holds HASHES ONLY (no EA content), so it lives in git as our own file. The baseline is
+only as trustworthy as the set it is generated from -- generate it ONLY against a verified-clean set
+(official SDK for shared SAGE types; Steam-verified game data for KW-specific truth), NEVER from a tree
+you have been editing. --baseline refuses unless you pass --i-verified-this-set-is-clean, so it can't
+seed silently from a dirty tree (CLAUDE.md invariant 4).
+
+Roots are resolved from the same environment tools/dev-env.sh exports (KW_SCHEMA / KW_BASEMANIFESTS),
+plus the in-repo base-stream/ if present; nothing about any one machine is baked in.
+"""
+import argparse
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+BASELINE = REPO / "inputs.sha256"
+# Lines in the manifest: "<sha256>  <label>:<relative-path>" (two spaces, label-namespaced path).
+SEP = "  "
+
+# Exit codes — stable, so the round-trip gates can wire this in unambiguously. DRIFT is deliberately
+# NOT 1 or 2 (argparse itself exits 2 on a bad flag; an uncaught error exits 1), so a preflight that
+# hard-aborts ONLY on DRIFT can never be tricked into aborting by an unrelated failure.
+EXIT_OK = 0          # baseline present and every input matches
+EXIT_NO_BASELINE = 3  # no inputs.sha256 yet -> caller should warn and continue (pre-clean-set)
+EXIT_NO_ROOTS = 4     # no BYO roots resolved -> caller should warn and continue
+EXIT_DRIFT = 5        # baseline present and an input differs -> caller should HARD-ABORT
+
+
+def _resolve_roots():
+    """(label, base_dir) for each BYO input tree, resolved from env + repo layout. Missing ones are
+    skipped with a note -- a partial clean set still gets a partial, honest baseline."""
+    roots = []
+    # Schema tree: KW_SCHEMA points at .../kw/xsd/CnC3Types.xsd; hash the whole kw schema dir.
+    schema = os.environ.get("KW_SCHEMA")
+    schema_dir = None
+    if schema:
+        p = Path(schema)
+        # walk up to the 'kw' directory (…/schemas/kw/xsd/CnC3Types.xsd -> …/schemas/kw)
+        for anc in p.parents:
+            if anc.name == "kw":
+                schema_dir = anc
+                break
+    if schema_dir is None:
+        cand = REPO / "schemas" / "kw"
+        if cand.exists():
+            schema_dir = cand
+    if schema_dir and schema_dir.exists():
+        roots.append(("schema", schema_dir.resolve()))
+    # Base-stream manifests (RefPack-decompressed), the -rm ground truth.
+    bm = os.environ.get("KW_BASEMANIFESTS")
+    if bm and Path(bm).exists():
+        roots.append(("base-manifests", Path(bm).resolve()))
+    # In-repo base-stream fixtures, if the user keeps them here.
+    bs = REPO / "base-stream"
+    if bs.exists():
+        roots.append(("base-stream", bs.resolve()))
+    return roots
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _hash_tree(label, base):
+    """{"<label>:<relpath>": "<sha256>"} for every regular file under base (symlinks resolved,
+    deterministic order). Skips nothing -- coverage is honest."""
+    out = {}
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
+        dirnames.sort()
+        for name in sorted(filenames):
+            full = Path(dirpath) / name
+            if not full.is_file():
+                continue
+            rel = full.resolve().relative_to(base).as_posix()
+            out[f"{label}:{rel}"] = _sha256(full)
+    return out
+
+
+def _collect(roots):
+    collected = {}
+    for label, base in roots:
+        collected.update(_hash_tree(label, base))
+    return collected
+
+
+def _read_baseline():
+    entries = {}
+    with open(BASELINE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            digest, _, key = line.partition(SEP)
+            if not key:
+                raise ValueError(f"malformed baseline line: {line!r}")
+            entries[key] = digest
+    return entries
+
+
+def _write_baseline(entries, roots):
+    lines = [
+        "# inputs.sha256 -- OpenWrath bring-your-own input baseline. Hashes only, no EA content.",
+        "# Generated by tools/verify-inputs.py --baseline against a VERIFIED-CLEAN set.",
+        "# Format: <sha256>  <label>:<relative-path>. Roots: "
+        + ", ".join(label for label, _ in roots) + ".",
+    ]
+    for key in sorted(entries):
+        lines.append(f"{entries[key]}{SEP}{key}")
+    BASELINE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def cmd_baseline(args):
+    if not args.i_verified_this_set_is_clean:
+        sys.exit(
+            "refusing to generate a baseline without --i-verified-this-set-is-clean.\n"
+            "The baseline is only as trustworthy as the set it is generated from. Point this at a\n"
+            "freshly re-downloaded SDK / Steam-verified game data -- NOT a tree you have been editing\n"
+            "(CLAUDE.md invariant 4). Then re-run with the flag.")
+    roots = _resolve_roots()
+    if not roots:
+        sys.exit("no BYO input roots resolved (set KW_SCHEMA / KW_BASEMANIFESTS; see tools/dev-env.sh).")
+    entries = _collect(roots)
+    _write_baseline(entries, roots)
+    print(f"wrote {BASELINE.relative_to(REPO)} : {len(entries)} files across "
+          f"{len(roots)} root(s) [{', '.join(l for l, _ in roots)}].")
+    print("Commit it. From now on `tools/verify-inputs.py` refuses on any drift from this set.")
+    return 0
+
+
+def cmd_verify(args):
+    if not BASELINE.exists():
+        print(f"no {BASELINE.relative_to(REPO)} yet -- input integrity is NOT being enforced. Generate it "
+              f"against a clean set:\n  tools/verify-inputs.py --baseline --i-verified-this-set-is-clean",
+              file=sys.stderr)
+        return EXIT_NO_BASELINE
+    roots = _resolve_roots()
+    if not roots:
+        print("no BYO input roots resolved (set KW_SCHEMA / KW_BASEMANIFESTS; see tools/dev-env.sh).",
+              file=sys.stderr)
+        return EXIT_NO_ROOTS
+    expected = _read_baseline()
+    actual = _collect(roots)
+    exp_keys, act_keys = set(expected), set(actual)
+    missing = sorted(exp_keys - act_keys)          # in baseline, gone from disk
+    added = sorted(act_keys - exp_keys)             # on disk, not in baseline
+    changed = sorted(k for k in (exp_keys & act_keys) if expected[k] != actual[k])
+
+    if not (missing or added or changed):
+        print(f"inputs OK: {len(actual)} files match {BASELINE.relative_to(REPO)}.")
+        return EXIT_OK
+
+    print(f"INPUT DRIFT vs {BASELINE.relative_to(REPO)} -- a BYO input differs from the verified-clean "
+          f"baseline.", file=sys.stderr)
+    for k in changed:
+        print(f"  CHANGED  {k}", file=sys.stderr)
+    for k in missing:
+        print(f"  MISSING  {k}", file=sys.stderr)
+    for k in added:
+        print(f"  ADDED    {k}", file=sys.stderr)
+    print("\nA 'verified' result must not rest on a mutated input (finding 0013/0014). Restore the "
+          "pristine file, or -- if this drift is intended (a genuine KW schema update) -- re-baseline "
+          "against the clean set.", file=sys.stderr)
+    return EXIT_DRIFT
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="OpenWrath BYO input-integrity preflight.")
+    ap.add_argument("--baseline", action="store_true",
+                    help="(re)generate inputs.sha256 from the resolved BYO set (requires the clean-set flag).")
+    ap.add_argument("--i-verified-this-set-is-clean", action="store_true",
+                    help="affirm the resolved set is a freshly verified-clean source; required by --baseline.")
+    args = ap.parse_args(argv)
+    return cmd_baseline(args) if args.baseline else cmd_verify(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -88,6 +88,12 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   3. **`verify-inputs` preflight** — `roundtrip.sh` / the toolchain hash the BYO files first, compare to the
      baseline, and **refuse (or loudly warn) on any drift**. Input integrity becomes "correctness you can run,"
      and a "verified" result can never again silently rest on a mutated input, because the preflight catches it.
+
+  **Built (data-independent):** `tools/verify-inputs.py` (generate `--baseline` from a *verified-clean* set —
+  refuses to seed from a dirty tree; verify mode with dedicated exit codes) + `tools/verify-inputs-preflight.sh`
+  wired into **both** round-trip gates (`roundtrip.sh`, `corpus-roundtrip.sh`): drift → hard-abort before the
+  round-trip, no baseline yet → warn + continue. Enforcement switches on automatically the moment `inputs.sha256`
+  is generated from the clean set and committed (step 2). *Remaining:* generate + commit `inputs.sha256`.
 - 📋 **BYO / EA-sourced inputs are read-only.** Schemas and game data are never modified in place; OpenWrath's
   additions live in owned, tracked files or in code. Encoded in `CLAUDE.md` and the subagent-spec template so it
   can't recur. (finding [0013])
