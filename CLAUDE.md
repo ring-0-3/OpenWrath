@@ -27,7 +27,11 @@ part of the design — **verify, don't assert.**
 4. **Verify inputs, not just outputs.** The oracle silently assumes pristine ground truth — don't. Baseline BYO
    inputs from a *verified-clean* set (official SDK for shared SAGE types; Steam-verified game data for
    KW-specific truth), committed as `inputs.sha256`, enforced by a `verify-inputs` preflight that **refuses on
-   drift**. **Never seed the baseline from the current (possibly-dirty) tree.**
+   drift**. **Never seed the baseline from the current (possibly-dirty) tree.** **Pristine is not enough — the
+   clean set must also match the *patch version the engine actually runs*** (finding 0016: a `Core/1.0` baseline
+   is pristine yet `0010`-crashes a 1.3 engine). Record the patch version in the baseline; the KW-specific base is
+   the **running patch's stream** (e.g. the patch `Static_mod`), not an older `Core/x.x`. "Matches shipped bytes"
+   is meaningless without naming the patch.
 5. **Honest coverage.** Report what was *sampled*, not assumed. Byte-exact where proven; honestly bucketed
    otherwise. Publish the gaps — never a silent green checkmark.
 
