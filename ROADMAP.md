@@ -153,10 +153,17 @@ anyone can *check*, not merely trust.
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
 - ✅ **Art — `W3DAnimation` byte-exact vs shipped** (Pillar 2, first milestone). Decompile ↔ recompile via the
   W3X compiler, with lossy time-coded / adaptive-delta channels **passed through** in their shipped compressed
-  form (no re-compression — §4 tiered fidelity, done right). Verified byte-exact on a widened, *un-sampled*
-  sample. Follow-ups before it's fully landed: relax the authoring-XSD **only** for the detected runtime form
-  (`IsRuntimeAnimation`, logged — *no schema widening*) so it reproduces from the pristine schema; dedup three §3
-  drift-seeds (shared float-render, one channel-typeid source, one reader-dispatch helper).
+  form (no re-compression — §4 tiered fidelity, done right). Verified from the **pristine** schema: seed-7
+  sample **125/125** byte-exact + all four channel-codec cases (mixed / time-coded / adaptive-delta / empty);
+  data types regression-clean (Armor 207/207, Weapon 456/456). The runtime channels are bound to EA's own
+  `AnimationChannelTimecoded`/`Delta` types **in code** (`SchemaSet.BindRuntimeAnimationChannels`), never by
+  editing a BYO schema file (finding 0014); §3 drift-seeds deduped (shared float-render, one channel-typeid
+  source, one reader-dispatch helper).
+- 📋 **Schema-overlay registry** — the permanent home for in-code schema augmentations. The W3DAnimation runtime
+  binding above is the **prototype**; it is data-shaped (`(element, type)` table) precisely so it migrates into a
+  general registry of owned, declarative overlays (per-type, versioned) when a second one is needed, instead of
+  accreting ad-hoc augmentations in `SchemaSet`. (The owned-schema-file / `xs:redefine` variant is the documented
+  alternative to evaluate then.)
 - 📋 **Art — `W3DMesh`, then textures (DDS).** Mesh via the vertex pipeline; textures can't bit-reproduce EA's
   compressor, so a **stated weaker tier**, never reported as byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
 - 📋 **Maps** (greenfield `.map` reader + writer; 96 shipped maps as corpus) and **sound** (native EALayer3

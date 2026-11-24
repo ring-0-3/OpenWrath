@@ -226,11 +226,21 @@ namespace BinaryAssetBuilder.Decompiler.Cli
         // every asset either decompiles or becomes a labelled <RawAsset>, and the run NEVER crashes on bad data.
         // This is the foreign-mod robustness test (e.g. Second Isomer's ~44k-asset static_mod).
         //   bab-decompile decompile-stream <manifest> [--rm ...] [--schema X] [--stringhashes X]
-        //                                  [--outdir DIR] [--only NAME]
+        //                                  [--outdir DIR] [--only NAME] [--type HEX]
         private static int DecompileStream(string[] args)
         {
             string manifestPath = args[1];
             string only = GetOption(args, "--only");
+            // Optional TypeId filter (e.g. --type 2448ae30 or 0x2448ae30) -- process only assets of that type.
+            // Mirrors tools/compare-stream.py's --type; lets a single stream pass target one type (e.g. for a
+            // per-type sampled round-trip) instead of walking/emitting all ~40k assets.
+            string typeHex = GetOption(args, "--type");
+            uint? typeFilter = null;
+            if (typeHex != null)
+            {
+                string h = typeHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? typeHex.Substring(2) : typeHex;
+                typeFilter = uint.Parse(h, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
+            }
             string outdir = GetOption(args, "--outdir");           // if set, write decompiled XML; else tally only
             string schemaPath = GetOption(args, "--schema");
             string rm = GetOption(args, "--rm");
@@ -274,6 +284,10 @@ namespace BinaryAssetBuilder.Decompiler.Cli
             foreach (AssetInput asset in LinkedStreamReader.Read(m, binPath, reloPath, impPath))
             {
                 i++;
+                if (typeFilter.HasValue && asset.TypeId != typeFilter.Value)
+                {
+                    continue;
+                }
                 if (!typeHashes.TryGetValue(asset.TypeId, out HashSet<uint> hs)) { hs = new HashSet<uint>(); typeHashes[asset.TypeId] = hs; }
                 hs.Add(asset.TypeHash);
                 typeCounts.TryGetValue(asset.TypeId, out int tc); typeCounts[asset.TypeId] = tc + 1;

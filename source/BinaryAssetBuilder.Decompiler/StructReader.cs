@@ -720,17 +720,9 @@ namespace BinaryAssetBuilder.Decompiler
             return display?.Name ?? n;
         }
 
-        private static string RenderFloat(float v)
-        {
-            // XSD xs:float rejects .NET's "Infinity"/"-Infinity" spellings, and float.Parse rejects XSD's
-            // "INF". Emit an out-of-range magnitude that BOTH accept: it validates as a number and parses to
-            // the same ±infinity bit pattern. NaN is spelled identically by both.
-            if (float.IsPositiveInfinity(v)) return "1e39";
-            if (float.IsNegativeInfinity(v)) return "-1e39";
-            if (float.IsNaN(v)) return "NaN";
-            // .NET Core formats finite floats shortest-round-trippable by default.
-            return v.ToString(CultureInfo.InvariantCulture);
-        }
+        // Delegates to the single source (ValueRender.Float) so the round-trip spelling can't drift between
+        // this walker and the type-specific readers.
+        private static string RenderFloat(float v) => ValueRender.Float(v);
 
         // Several wrapper types store `stored = (float)(float.Parse(text) * scale)` (Percentage: scale=0.01f;
         // Angle: deg->rad; etc.). To round-trip byte-exact we must emit a pre-image P whose compile reproduces

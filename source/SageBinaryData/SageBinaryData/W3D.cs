@@ -364,6 +364,16 @@ namespace SageBinaryData
         public ushort Pivot;
     }
 
+    // Canonical runtime channel TypeIds — the single source for both the compiler (the time-coded /
+    // adaptive-delta compressors and the runtime pass-through marshaler) and the decompiler's
+    // W3DAnimationReader. Each is the discriminator stamped at offset 0 of a shipped runtime channel
+    // (= FastHash of the channel struct's name). Kept here, beside the structs, so the two sides can't drift.
+    public static class AnimationChannelTypeIds
+    {
+        public const uint Timecoded = 0x60D8CF69u;      // FastHash("AnimationChannelTimecoded")
+        public const uint AdaptiveDelta = 0x77F97305u;  // FastHash("AnimationChannelDelta")
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct AnimationChannelTimecoded
     {

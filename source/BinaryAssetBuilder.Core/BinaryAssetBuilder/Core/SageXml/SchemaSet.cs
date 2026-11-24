@@ -322,6 +322,93 @@ namespace BinaryAssetBuilder.Core.SageXml
             return true;
         }
 
+        // Prototype runtime-form binding for W3DAnimation (finding 0014). A shipped W3DAnimation is in its
+        // compressed RUNTIME form: <W3DAnimation> ... <Channels> holding <Timecoded>/<Delta> channels. EA's
+        // schema already defines those channel types (AnimationChannelTimecoded / AnimationChannelDelta, used by
+        // the W3DAnimationRuntime type) but does not reach them from the authoring W3DAnimation's <Channels>
+        // choice. We add that reach here, IN CODE, before Compile(), so the runtime channels become schema-bound
+        // and the whole normal pipeline works through them (validation, reference-handling, instance hashing,
+        // TypeId stamping, marshaling) while the asset element stays <W3DAnimation> (TypeHash unchanged). This
+        // reuses EA's own types -- it invents nothing -- and never edits a bring-your-own schema file
+        // (CLAUDE.md invariant 1). It is the PROTOTYPE binding; it is data-shaped so it migrates mechanically into
+        // the schema-overlay registry once that exists (see ROADMAP). Guarded to the W3DAnimation type only, and
+        // a no-op if the schema lacks it or has an unexpected shape (e.g. the RA3/TW schema variants).
+        private static readonly (string Element, string Type)[] _runtimeAnimationChannelBindings =
+        {
+            ("Timecoded", "AnimationChannelTimecoded"),
+            ("Delta",     "AnimationChannelDelta"),
+        };
+
+        private void BindRuntimeAnimationChannels()
+        {
+            foreach (XmlSchema schema in Schemas.Schemas())
+            {
+                foreach (XmlSchemaObject item in schema.Items)
+                {
+                    if (item is not XmlSchemaComplexType { Name: "W3DAnimation" } w3dAnimation)
+                    {
+                        continue;
+                    }
+                    XmlSchemaChoice channels = FindChannelsChoice(w3dAnimation);
+                    if (channels is null)
+                    {
+                        return; // unexpected shape -> leave the schema exactly as EA shipped it
+                    }
+                    HashSet<string> present = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (XmlSchemaObject member in channels.Items)
+                    {
+                        if (member is XmlSchemaElement { Name: not null } existing)
+                        {
+                            present.Add(existing.Name);
+                        }
+                    }
+                    bool changed = false;
+                    foreach ((string element, string type) in _runtimeAnimationChannelBindings)
+                    {
+                        if (present.Contains(element))
+                        {
+                            continue; // idempotent: never add a channel the schema already reaches
+                        }
+                        channels.Items.Add(new XmlSchemaElement
+                        {
+                            Name = element,
+                            SchemaTypeName = new XmlQualifiedName(type, XmlNamespace),
+                        });
+                        changed = true;
+                    }
+                    if (changed)
+                    {
+                        Schemas.Reprocess(schema);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // The xs:choice inside the authoring W3DAnimation's <Channels> element (ChannelScalar/ChannelQuaternion),
+        // or null if the type is not shaped as expected. Walks the uncompiled model, so it must run before Compile().
+        private static XmlSchemaChoice FindChannelsChoice(XmlSchemaComplexType w3dAnimation)
+        {
+            if ((w3dAnimation.ContentModel as XmlSchemaComplexContent)?.Content is not XmlSchemaComplexContentExtension extension)
+            {
+                return null;
+            }
+            if (extension.Particle is not XmlSchemaSequence sequence)
+            {
+                return null;
+            }
+            foreach (XmlSchemaObject member in sequence.Items)
+            {
+                if (member is XmlSchemaElement { Name: "Channels" } channels
+                    && channels.SchemaType is XmlSchemaComplexType channelsType
+                    && channelsType.Particle is XmlSchemaChoice choice)
+                {
+                    return choice;
+                }
+            }
+            return null;
+        }
+
         private void LoadSchemas(bool countDependencies)
         {
             try
@@ -332,6 +419,7 @@ namespace BinaryAssetBuilder.Core.SageXml
             {
                 throw new BinaryAssetBuilderException(ex, ErrorCode.ReadingSchema, "Error encountered in schema '{0}'", _currentSchema);
             }
+            BindRuntimeAnimationChannels();
             Schemas.Compile();
             SetupHelperSchemaTypes();
             SortedDictionary<string, StringCollection> dictionary = new SortedDictionary<string, StringCollection>

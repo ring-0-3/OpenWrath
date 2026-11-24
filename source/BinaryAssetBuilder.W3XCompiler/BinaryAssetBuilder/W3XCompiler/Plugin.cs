@@ -81,9 +81,24 @@ namespace BinaryAssetBuilder.W3XCompiler
 
         public unsafe void HandleW3DAnimation(InstanceDeclaration declaration, AssetBuffer buffer)
         {
+            bool isBigEndian = _platform == TargetPlatform.Xbox360;
+            {
+                XmlNamespaceManager nsm = declaration.Document.NamespaceManager;
+                XPathNavigator nav = declaration.Node.CreateNavigator();
+                Node rootNode = new Node(nav, nsm);
+                if (Marshaler.IsRuntimeAnimation(rootNode))
+                {
+                    // Pre-compressed (runtime) form: write the shipped channels straight through, no
+                    // re-compression, so a decompiled W3DAnimation reproduces its shipped bytes exactly.
+                    W3DAnimationRuntime* runtime;
+                    using Tracker runtimeTracker = new Tracker((void**)&runtime, (uint)sizeof(W3DAnimationRuntime), isBigEndian, typeof(W3DAnimationRuntime));
+                    Marshaler.MarshalW3DAnimationRuntime(rootNode, runtime, runtimeTracker);
+                    WriteAssetBuffer(buffer, runtimeTracker);
+                    return;
+                }
+            }
             W3DAnimation* animation;
             using Tracker tracker = new Tracker((void**)&animation, (uint)sizeof(W3DAnimation), false, typeof(W3DAnimation));
-            bool isBigEndian = _platform == TargetPlatform.Xbox360;
             W3DAnimationRuntime* animationRuntime;
             using Tracker trackerRuntime = new Tracker((void**)&animationRuntime, (uint)sizeof(W3DAnimationRuntime), isBigEndian, typeof(W3DAnimationRuntime));
             XmlNamespaceManager namespaceManager = declaration.Document.NamespaceManager;

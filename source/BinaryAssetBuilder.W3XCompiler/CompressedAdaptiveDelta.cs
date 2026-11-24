@@ -256,7 +256,7 @@ internal class CompressedAdaptiveDelta
     public unsafe void WriteOut(Tracker state, AnimationChannelDelta** objT)
     {
         using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(AnimationChannelDelta), 1u, typeof(AnimationChannelDelta));
-        uint typeId = 0x77F97305u;
+        uint typeId = AnimationChannelTypeIds.AdaptiveDelta;
         state.InplaceEndianToPlatform(&typeId);
         AnimationChannelDelta* result = *objT;
         result->Base.TypeId = typeId;

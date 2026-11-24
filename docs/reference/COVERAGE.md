@@ -137,13 +137,64 @@ to match the shipped string-data order). **All 8 instances of the type** now rec
 |------|------|
 | Road | Registered + modeled, but no `Road` instances appear in `static_common` / `global_*`, so it cannot be ground-truthed from these streams. Unmeasured here. |
 
+## Art pipeline (Pillar 2) — W3DAnimation byte-exact (2026-11-24)
+
+**`W3DAnimation` (TypeId `0x2448AE30`) round-trips byte-exact against shipped bytes, from the pristine
+(un-widened) schema.** This is the first art-pipeline type to reach the data-type ground-truth bar. The earlier
+result rested on an in-place schema widening (finding
+[0013](../findings/0013-byo-schema-edited-in-place.md)); that was reverted and the binding re-established **in
+OpenWrath's own code** (finding
+[0014](../findings/0014-runtime-w3danimation-dispatch-depends-on-schema-stamped-typeid.md)), so the number below
+is earned by the current, BYO-clean pipeline — not by any edit to a bring-your-own file.
+
+- **Result.** `static_common` (`~/cnc-kw-godmod/ea-roundtrip/eastream/static_common.manifest`), **1792**
+  `W3DAnimation` instances, all decompiling cleanly (`ok=1792, raw=0`). A reproducible random sample of **125**
+  (seed 7) recompiles **125/125 BYTEEXACT** (`sizeok_valdiff=0, sizediff=0`). Codec coverage BYTEEXACT on
+  `ABBHIVE_D2AN` (20 mixed time-coded + adaptive-delta channels), `ABBHIVEDR_CLS` (time-coded only),
+  `ABBHIVEDR_OPN` (adaptive-delta only), and `ABGATEWAYFXDIE` (empty channel list). Measured with
+  `tools/roundtrip.sh --from-binary` / `bab-decompile decompile-stream --type 0x2448ae30` + `compare-stream.py`.
+
+- **Approach — runtime pass-through (lossless), not decompress→recompress.** In KW a `W3DAnimation` ships in
+  its compiled runtime form `W3DAnimationRuntime`, whose per-bone channels are already time-coded or
+  adaptive-delta **compressed** (lossy). The compressor dominates the corpus, so decompressing to raw frames and
+  re-running the compressor cannot reproduce the shipped bytes. Instead the decompiler emits each channel in its
+  **shipped compressed form** — `<Timecoded FrameAndBinaryFlag Values>` /
+  `<Delta Scale Init NumBits CompressedValues>` — and the W3X compiler writes those straight into the
+  `W3DAnimationRuntime` layout with no re-compression. The asset element stays `<W3DAnimation>` so the shipped
+  TypeId `0x2448AE30` / TypeHash `0xCC069193` are reproduced exactly.
+
+- **How the runtime channels bind WITHOUT editing the BYO schema (finding 0014).** EA's schema already defines
+  the runtime channel types (`AnimationChannelTimecoded` / `AnimationChannelDelta`) but doesn't reach them from
+  the authoring `W3DAnimation`'s `<Channels>` choice. OpenWrath adds that reach **in code**, before the schema
+  compiles — `SchemaSet.BindRuntimeAnimationChannels()` adds `<Timecoded>`/`<Delta>` particles (→ EA's own
+  types) to the `W3DAnimation` `<Channels>` choice in memory. The runtime channels then bind, so the whole
+  normal pipeline works through them (validation, reference-handling, instance hashing, and the existing
+  `TypeId` stamping that drives the marshaler's dispatch). No bring-your-own schema *file* is modified
+  (invariant 1's "in code" clause). It is the **prototype** binding; it migrates into the schema-overlay
+  registry when that exists (ROADMAP).
+
+- **What was added / changed.** Core: `SchemaSet.BindRuntimeAnimationChannels` (the in-code binding). Decompiler:
+  `W3DAnimationReader.cs` (+ `ValueRender.cs`; dispatch via `AssetDecompiler.PopulateRoot`;
+  `decompile-stream --type` filter). Compiler: `Marshaler.W3DRuntime.cs` (runtime pass-through writer,
+  reproducing EA's exact block/array allocation order) + a runtime-form branch in `W3XCompiler/Plugin.cs`. Shared
+  single-source channel TypeIds in `SageBinaryData.AnimationChannelTypeIds`. **No schema file was modified.**
+
+- **No data-type regression from the shared schema augmentation.** The binding only adds particles to the
+  `W3DAnimation` type; closed-loop `Armor.xml` **207/207** and `Weapon.xml` **456/456** byte-exact confirm the
+  data types are unaffected.
+
+- **W3DMesh (stretch) — deferred.** Not attempted in this pass. The mesh pipeline packs authoring vertices into
+  a runtime `W3DMeshVertexData` layout via `W3DMeshProcessor`, so it needs its own (heavier) runtime
+  pass-through; left for a follow-up to avoid risking the verified `W3DAnimation` result.
+
 ## Not modeled (out of the 37)
 
 Types the decompiler encounters in shipped streams but the compiler does **not** register — e.g.
 `FXParticleSystemTemplate`, `Texture`, `W3DMesh`, `W3DContainer`, `W3DHierarchy`, `W3DCollisionBox`,
-`W3DAnimation`, `AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the UI/button/AI-strategy
-families. The decompiler labels these rather than crashing, but they cannot round-trip. The art / W3D / texture
-/ audio-file families belong to the planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`.
+`AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the UI/button/AI-strategy
+families. The decompiler labels these rather than crashing, but they cannot round-trip. The remaining art / W3D /
+texture / audio-file families belong to the planned **content pipeline**, not the data toolchain; see
+`../../ROADMAP.md`. (`W3DAnimation` has now left this list — see the art-pipeline section above.)
 
 ## Known decompiler (read-direction) limitations
 

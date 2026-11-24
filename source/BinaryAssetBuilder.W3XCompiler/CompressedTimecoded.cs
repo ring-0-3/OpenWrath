@@ -208,7 +208,7 @@ internal class CompressedTimecoded
     public unsafe void WriteOut(Tracker state, AnimationChannelTimecoded** objT)
     {
         using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(AnimationChannelTimecoded), 1u, typeof(AnimationChannelTimecoded));
-        uint typeId = 0x60D8CF69;
+        uint typeId = AnimationChannelTypeIds.Timecoded;
         state.InplaceEndianToPlatform(&typeId);
         AnimationChannelTimecoded* result = *objT;
         result->Base.TypeId = typeId;

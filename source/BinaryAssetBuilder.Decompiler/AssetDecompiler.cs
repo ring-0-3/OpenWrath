@@ -58,10 +58,25 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 root.SetAttributeValue("id", asset.Name);
             }
-            new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings).ReadStruct(type, 0u, root);
+            PopulateRoot(asset, type, root);
 
             document = new XDocument(new XElement(AssetNs + "AssetDeclaration", root));
             return true;
+        }
+
+        // Single dispatch from a decoded asset to the right reader: the type-specific W3DAnimationReader for
+        // W3DAnimation (ships in its compressed runtime form), the generic struct-walker for everything else.
+        // One copy so the closed-loop and foreign-mod paths can never pick different readers for the same type.
+        private void PopulateRoot(AssetInput asset, Type type, XElement root)
+        {
+            if (asset.TypeId == W3DAnimationReader.TypeId)
+            {
+                new W3DAnimationReader(asset, AssetNs, _resolver).Read(root);
+            }
+            else
+            {
+                new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings).ReadStruct(type, 0u, root);
+            }
         }
 
         // Foreign-mod-robust decompile of a single asset. NEVER throws: an unknown type, a desync, or any other
@@ -84,7 +99,7 @@ namespace BinaryAssetBuilder.Decompiler
                 {
                     root.SetAttributeValue("id", asset.Name);
                 }
-                new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings).ReadStruct(type, 0u, root);
+                PopulateRoot(asset, type, root);
                 unknownModules = root.Descendants(AssetNs + "UnknownModule").Count();
                 status = unknownModules > 0 ? "ok-unknownmodules" : "ok";
                 return root;
