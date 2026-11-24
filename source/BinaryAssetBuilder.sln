@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BinaryAssetBuilder.Decompil
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "bab-decompile", "bab-decompile\bab-decompile.csproj", "{85B5C5BF-5779-4830-843C-365FCE19C20F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "schema-selftest", "schema-selftest\schema-selftest.csproj", "{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -167,6 +169,18 @@ Global
 		{85B5C5BF-5779-4830-843C-365FCE19C20F}.Release|Any CPU.Build.0 = Release|x64
 		{85B5C5BF-5779-4830-843C-365FCE19C20F}.Release|x86.ActiveCfg = Release|x64
 		{85B5C5BF-5779-4830-843C-365FCE19C20F}.Release|x86.Build.0 = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|x64.ActiveCfg = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|x64.Build.0 = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|Any CPU.Build.0 = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|x86.ActiveCfg = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Debug|x86.Build.0 = Debug|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|x64.ActiveCfg = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|x64.Build.0 = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|Any CPU.ActiveCfg = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|Any CPU.Build.0 = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|x86.ActiveCfg = Release|x64
+		{6AADD88F-F2B3-4812-91E3-ECBE26C6DFCC}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

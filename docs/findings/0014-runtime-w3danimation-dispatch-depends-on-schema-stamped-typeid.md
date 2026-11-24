@@ -76,6 +76,11 @@ schema-overlay registry when that exists (ROADMAP). The two first-attempt patche
 ## Verification — byte-exact RESTORED from the pristine schema
 
 - **Builds clean** (`BinaryAssetBuilder.sln`, Debug|x64, 0 errors).
+- **Durable guard (no game data, CI-runnable):** `source/schema-selftest` asserts the binding's observable
+  invariant — after `SchemaSet.AugmentRuntimeAnimationChannels`, `<Timecoded>`/`<Delta>` validate under
+  `W3DAnimation/Channels`, and a negative control proves they are rejected *without* it (so it can't pass
+  vacuously). Catches a silent regression of this exact mechanism before it becomes a `Critical` at compile time;
+  wired into `.github/workflows/ci.yml`.
 - **W3DAnimation byte-exact vs shipped bytes**, `static_common`, from the **pristine** (un-widened) schema +
   the in-code binding: a reproducible **seed-7 sample of 125/125** recompiles byte-identical
   (`exact=125, sizeok_valdiff=0, sizediff=0`), and all 1792 instances decompile cleanly (`ok=1792, raw=0`).

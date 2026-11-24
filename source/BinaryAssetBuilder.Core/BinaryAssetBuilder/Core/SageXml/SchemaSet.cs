@@ -339,9 +339,15 @@ namespace BinaryAssetBuilder.Core.SageXml
             ("Delta",     "AnimationChannelDelta"),
         };
 
-        private void BindRuntimeAnimationChannels()
+        private void BindRuntimeAnimationChannels() => AugmentRuntimeAnimationChannels(Schemas);
+
+        // Core of the binding, exposed static so a BCL-only self-test (source/schema-selftest) can guard it with
+        // NO game data: build a minimal schema, call this, Compile(), assert <Timecoded>/<Delta> bind under
+        // W3DAnimation/Channels. The silent break of exactly this mechanism is what caused the finding-0014 detour,
+        // so it gets a durable, CI-runnable guard.
+        public static void AugmentRuntimeAnimationChannels(XmlSchemaSet schemas)
         {
-            foreach (XmlSchema schema in Schemas.Schemas())
+            foreach (XmlSchema schema in schemas.Schemas())
             {
                 foreach (XmlSchemaObject item in schema.Items)
                 {
@@ -378,7 +384,7 @@ namespace BinaryAssetBuilder.Core.SageXml
                     }
                     if (changed)
                     {
-                        Schemas.Reprocess(schema);
+                        schemas.Reprocess(schema);
                     }
                     return;
                 }

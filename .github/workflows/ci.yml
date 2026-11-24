@@ -25,3 +25,12 @@ jobs:
         run: dotnet build source/BinaryAssetBuilder/BinaryAssetBuilder.csproj -c Debug -p:Platform=x64
       - name: Build decompiler (bab-decompile)
         run: dotnet build source/bab-decompile/bab-decompile.csproj -c Debug -p:Platform=x64
+      # Schema-binding guard: a BCL-only self-test (no EA game data) that asserts the in-code runtime-channel
+      # binding still makes <Timecoded>/<Delta> valid under W3DAnimation/Channels (and is rejected without it).
+      # Guards the exact mechanism whose silent break caused finding 0014.
+      - name: Schema-binding self-test
+        env:
+          DOTNET_ROLL_FORWARD: LatestMajor
+        run: |
+          dotnet build source/schema-selftest/schema-selftest.csproj -c Debug -p:Platform=x64
+          dotnet Debug/schema-selftest.dll
