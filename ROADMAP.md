@@ -37,10 +37,14 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case), bringing GameObjects to
   **same-size, value-diff** vs shipped (see below). Art / W3D / texture / particle types are **out of scope
   here** → content pipeline.
-- 📋 **Auto-decompress RefPack manifests/streams on read.** Shipped stream parts are often RefPack-compressed
-  (magic `0x10FB`); the reader currently needs a pre-decompressed input and now *detects + clearly reports* the
-  compression (previously misreported as "Xbox360 big-endian"). Next: decompress transparently — port RefPack
-  into the .NET reader, or decompress in the harness — so a compressed manifest/stream just works.
+- 🔧 **RefPack manifest/stream handling.** Shipped stream parts are often RefPack-compressed. RefPack is
+  identified by its **second** byte (`0xFB`); the first byte is a flags byte that *varies* (`0x10`/`0x11`/`0x90`/
+  `0x91` — `0x90` ships on `static_common.bin`). The reader's first guard matched only `0x10FB`, so the `0x90`/
+  `0x11` variants still misreported as "Xbox360 big-endian" (finding [0012] — overfit to one sampled variant +
+  duplicated-knowledge drift). Fix: detect on `byte[1] == 0xFB` via a **single shared `IsRefPack()`** (one
+  authority used by C# *and* `refpack.py`), correct the "0x10FB magic" wording, consolidate the duplicate
+  `pytools/refpack.py` + `modkit/lib/refpack.py`, then **decompress transparently** (port RefPack into the .NET
+  reader, or decompress in the harness) so a compressed manifest/stream just works.
 
 ## Verification & reliability
 - ✅ `tools/roundtrip.sh` — the correctness gate, two modes:
@@ -51,14 +55,19 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
     byte-compare every asset to the **original shipped bytes**, bucketed per type (byte-exact / same-size
     value-diff / size-mismatch / recompile-missing, with first-diff offsets). This proves the output is *what
     the game actually loads*, and it has surfaced real bugs closed-loop alone could not.
-- ✅ **Ground-truth results (2026-11-20):** of the 37 registered types, **33 reproduce EA's shipped bytes
-  byte-exact on sampled instances**; GameObject and Environment are structurally exact with a residual
-  value-diff; MultiplayerColor has a recompile gap; Road has no instances in the sampled streams. Full matrix,
-  sampled instances, and method in **[docs/reference/COVERAGE.md](docs/reference/COVERAGE.md)**.
+- ✅ **Ground-truth results (2026-11-24):** of the 37 registered types, **34 reproduce EA's shipped bytes
+  byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide` field);
+  GameObject is **40/50** on a *widened* sample, with the residual characterized as module-tag / weak-ref name
+  recovery bounded by StringHashes coverage (byte-exact once the name is in the table); Environment is
+  structurally exact with one known-lossy weak-ref; Road has no sampled instances. Full matrix, sampled
+  instances, and method in **[docs/reference/COVERAGE.md](docs/reference/COVERAGE.md)**.
 - ✅ **Master `StringHashes.xml`** harvested from an SDK compile, so module-id / inherited string values resolve
   during decompilation.
-- 🔧 **Finish GameObject byte-exactness vs shipped bytes** — the residual value-diff is localized to the
-  module / weapon-set region (incl. the MARV turret block). This is the next fidelity milestone.
+- 🔧 **Close the GameObject residual (~20% of the widened sample)** — now characterized: the remaining diffs are
+  isolated 4-byte module-id tags (and Environment's one weak-ref) that `FastHash` to names absent from the
+  supplied StringHashes — byte-exact once harvested. The fix is a **more complete StringHashes table** (harvested,
+  blocked today by a `-scd` whole-tree finalization crash — tracked), **not** a compiler change: hardcoding the
+  shipped value would be overfitting ([verification-blind-spots](docs/design/verification-blind-spots.md) §2).
 - 🔧 **Tolerant-but-honest validation.** Where the authoring schema is a strict *subset* of what shipped data
   uses (e.g. enum fields holding integer values the schema never names), the compiler reproduces the shipped
   value rather than refusing it — **informational** when attested in shipped data, a loud **warning** when novel.
@@ -66,6 +75,28 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   (**harvested from shipped data, never hardcoded**).
 - ✅ **CI** — builds the compiler + decompiler on every push/PR (`.github/workflows/`); the data-dependent
   round-trip gate runs locally / self-hosted (game data can't live in CI).
+- 📋 **Verify inputs, not just outputs — the input-integrity preflight.** The round-trip gate proves our
+  *output* matches shipped bytes, but nothing checks that the *inputs* (schema, base streams, manifests, SDK
+  XML) are the pristine ground truth — the oracle silently assumes they are. That assumption is the hole
+  **finding [0013]** fell through: an agent edited a bring-your-own schema in place, and a "verified" result then
+  quietly depended on the edit. A one-time re-download fixes today; it doesn't stop the next silent edit. Fix,
+  symmetric with the output gate:
+  1. **Establish a clean set** — verified game install + fresh SDK.
+  2. **Commit a checksum manifest** — `inputs.sha256`: SHA-256 of every BYO input (each schema,
+     `base-stream/*.{bin,relo,imp,manifest}`, `base-manifests/*`, the dataroot XML). It holds *hashes, not EA
+     content*, so it lives in git as our own file.
+  3. **`verify-inputs` preflight** — `roundtrip.sh` / the toolchain hash the BYO files first, compare to the
+     baseline, and **refuse (or loudly warn) on any drift**. Input integrity becomes "correctness you can run,"
+     and a "verified" result can never again silently rest on a mutated input, because the preflight catches it.
+- 📋 **BYO / EA-sourced inputs are read-only.** Schemas and game data are never modified in place; OpenWrath's
+  additions live in owned, tracked files or in code. Encoded in `CLAUDE.md` and the subagent-spec template so it
+  can't recur. (finding [0013])
+- 📋 **Subagent-spec template = goal + reuse-map + boundaries** (the systemic fix). Every delegated task carries
+  three parts, not one: (a) an oracle-backed **bounded goal**, (b) a **reuse map** — the existing
+  helpers/authorities it must *not* re-derive (`refpack.py`, `StructReader`'s float-render, the channel
+  type-ids, …), and (c) **boundaries** — what's off-limits (BYO/EA files, the comparator/oracle). The RefPack
+  overfit (0012) and the schema edit (0013) both trace to specs that had (a) but not (b)/(c); this is the one
+  change that attacks the recurring root cause rather than the symptom.
 
 ## Developer modkit
 - 🔧 **`modkit/openwrath`** — a developer-facing, **config-driven** CLI that turns the hand-run pipeline into a
@@ -114,9 +145,18 @@ anyone can *check*, not merely trust.
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
-- 📋 **Art / asset compilers** for new-content mods — the big build: textures (DDS), meshes/animation (W3D), and
-  audio files. This is what unlocks making *new* assets, not just editing existing ones. It is a separate effort
-  from the data toolchain above.
+- ✅ **Art — `W3DAnimation` byte-exact vs shipped** (Pillar 2, first milestone). Decompile ↔ recompile via the
+  W3X compiler, with lossy time-coded / adaptive-delta channels **passed through** in their shipped compressed
+  form (no re-compression — §4 tiered fidelity, done right). Verified byte-exact on a widened, *un-sampled*
+  sample. Follow-ups before it's fully landed: relax the authoring-XSD **only** for the detected runtime form
+  (`IsRuntimeAnimation`, logged — *no schema widening*) so it reproduces from the pristine schema; dedup three §3
+  drift-seeds (shared float-render, one channel-typeid source, one reader-dispatch helper).
+- 📋 **Art — `W3DMesh`, then textures (DDS).** Mesh via the vertex pipeline; textures can't bit-reproduce EA's
+  compressor, so a **stated weaker tier**, never reported as byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
+- 📋 **Maps** (greenfield `.map` reader + writer; 96 shipped maps as corpus) and **sound** (native EALayer3
+  decode; faithful-not-identical re-encode) — later pillars, each its own dedicated run.
+- 📋 **Art / asset compilers** for new-content mods — the big build. Unlocks making *new* assets, not just editing
+  existing ones; a separate effort from the data toolchain above.
 
 ## Packaging & docs
 - 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no game content).
