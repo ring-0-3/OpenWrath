@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | **KWBandage** | data / overlay | [github.com/theHostileNegotiator/KWBandage](https://github.com/theHostileNegotiator/KWBandage) | theHostileNegotiator + KW community | **byte-inspected** |
 | **KW Mod SDK 2020 "SampleMod"** (new units) | authoring / re-pack (geometry+texture+FX) | [github.com/JenkinsTR/KanesWrath-MODSDK-2020](https://github.com/JenkinsTR/KanesWrath-MODSDK-2020) | Jenkins/JMDigital/EALA/DarthJane/JonWil, built on WrathEd (Bibber et al.) | **byte-inspected** |
-| **Kane's Wrath 4K Edition (R25)** | true frontier (HD textures) | [ModDB](https://www.moddb.com/games/cc-kanes-wrath/addons/4k-add-on-installer) / kaneswrath.com | KW 4K/UHD remaster team | **hypothesis-not-verified** (installer `.exe`; ModDB 403 to automation — never downloaded) |
+| **Kane's Wrath R25n 4K Edition (Standard)** | true frontier (HD textures) | [ModDB](https://www.moddb.com/games/cc-kanes-wrath/addons/4k-add-on-installer) / kaneswrath.com (installer supplied by the user) | KW 4K/UHD remaster team | **byte-inspected** (NSIS unpacked in quarantine; targets **R25**, not retail 1.3) |
 
 Also credited: WrathEd ([CNCNZ](https://cncnz.com/wrathed-v1-10-released/)). All tiers from
 [community-mods-as-frontier-reference](../design/community-mods-as-frontier-reference.md) are represented.
@@ -63,15 +63,38 @@ The richest find: a buildable new-unit example showing exactly how non-EA geomet
    texture-slot name → StringHash → the `Texture`/`OnDemandTexture` record in the mounted stream; UI resolves
    `PackedTextureImage` id likewise.
 
-### Mod 3 — KW 4K Edition (true-frontier texture tier) — **hypothesis-not-verified**
-Not downloaded (ModDB 403 to automation; installer-only). From public descriptions only: a one-click installer of
-HD textures that the retail engine loads; advertised **C&C-Online-compatible**, which strongly implies a
-**texture/art-only override** that does **not** touch gameplay type-hashes — most likely a larger texture-only
-overlay riding the same slot as the 1.3 patch's art stream (0017 notes that stream is ~98% zero-data, ~384 art
-assets carry bytes), or `add-big`/`add-config`. **Byte-exact-invertible? No, by definition** — new higher-res
-content with no EA original to match: pure stated-tier. **Recommendation: do not chase the `.exe`** — Mod 2 already
-gives a byte-inspectable, legally-cleaner existence-proof of the identical mechanism; the 4K pack only scales
-resolution.
+### Mod 3 — "Kane's Wrath R25n 4K Edition (Standard)" (true-frontier texture tier) — **contents byte-inspected; engine behavior attested-not-tested**
+The user supplied the installer; it was byte-inspected in quarantine (a Nullsoft/NSIS installer: non-solid LZMA,
+props `5D 00 00 80 00` = lc3/lp0/pb2, 8 MB dict — decompressed with Python stdlib `lzma`, no mod bytes copied out).
+It targets **R25** (a community patch release, *not* retail 1.3) — a version-blindness note that matters. **Two
+levels of claim, kept distinct:** the mod's *contents* (install directives, DDS format/resolution) are genuinely
+byte-read here; the *engine's runtime response* to them (resolving a loose file over a packed one) is **attested**
+— documented `add-search-path` semantics + the fact that this pack demonstrably works for its users — **not tested**
+(the engine was not run here). Same distinction as the comparator/in-game blind spot.
+
+1. **What/where (verified from the install directives):** it does **not** repack a base BIG and does **not** touch
+   gameplay records. It mounts via the mod launcher's **SkuDef/config**, with exactly three directives:
+   `add-search-path 4KTextureMod/` · `add-big patch2.big` · `add-config ..\1.0\config.txt`.
+2. **Payload format (verified by decompressing the NSIS blocks and reading DDS headers directly):** standard **D3D9
+   DDS** (128-byte header, FourCC at 0x54, **no** DX10 extended header), **DXT1 and DXT5**, with **full mip chains**
+   and resolutions up to **2048×2048** (e.g. `2048×2048 mips=12 fourcc=DXT5`, `256×1024 mips=11 fourcc=DXT1`) —
+   genuinely high-res vs EA's typical 512/1024. (~2373 LZMA sub-blocks in the archive, the bulk of them textures.)
+3. **Records vs files: raw FILES** (verified: the payload is loose DDS files, no `Texture`/`OnDemandTexture` records
+   in the archive). The 4K textures are **loose DDS files** dropped into the `4KTextureMod/` search-path directory
+   (plus the small `patch2.big`). *Attested-not-tested:* that the engine's file resolver then overrides the
+   BIG-packed originals **by path/name** — standard `add-search-path` behavior, and the premise that makes the pack
+   work, but not observed here. Replacing no records is exactly why it stays **C&C-Online-compatible** (no
+   gameplay/type-hash change).
+4. **Load path:** the three directives `add-search-path 4KTextureMod/` + `add-big patch2.big` + `add-config
+   ..\1.0\config.txt` are *verified* (read from the installer; `..\1.0\` is the launcher's R25 version folder, i.e.
+   it chains the base R25 config). That this chain is what the engine honors to activate the override is
+   *attested-not-tested*. The mechanism is **distinct from, and simpler than, the 0017 `.version` overlay** — no
+   record modeling is needed to override a texture, just a correctly-pathed loose DDS.
+
+**Byte-exact-invertible? No, by definition** — new higher-res content with no EA original to match: pure
+stated-tier. But the mechanism's *contents* are now byte-read (not inferred), and — engine-honoring attested — it is
+the **easiest texture entry point of all**: loose-file override via `add-search-path`, which OpenWrath would still
+gate on an **in-game acceptance test** before claiming it works.
 
 ## Implicated COVERAGE types
 
@@ -89,7 +112,12 @@ byte-exact for shipped textures without reimplementing EA's compressor.
 
 ## Recommended first implementation milestones (ordered by oracle strength)
 
-1. **`PackedTextureImage` / `OnDemandTextureImage` FIRST** — plain data records (Base + a texture ref + three
+0. **Loose-file texture override via `add-search-path` (cheapest win — the route the 4K pack rides)** — overriding an
+   *existing* texture needs **no record support at all**: drop a correctly-pathed D3D9 DDS (DXT1/5, mip-chained)
+   into a SkuDef `add-search-path` directory and the engine's file resolver prefers it over the BIG-packed original
+   by name. This is a packaging/tooling feature (emit a SkuDef + a search-path tree), gated on **in-game
+   acceptance**, not a compiler change — and it is how the whole 4K ecosystem ships. Best first texture capability.
+1. **`PackedTextureImage` / `OnDemandTextureImage`** — plain data records (Base + a texture ref + three
    ICoord2D). No lossy pixel pipeline → should round-trip **byte-exact** against shipped bytes like the 0019
    connective-tissue types. Cheaply promotes two "Not modeled" types and de-risks the texture-record plumbing.
 2. **`Texture` / `OnDemandTexture` record, payload pass-through** — model the runtime record (Base/id/hash + the
@@ -97,8 +125,8 @@ byte-exact for shipped textures without reimplementing EA's compressor.
    textures, no compressor reimplementation. **Precondition:** open a shipped `static/global` texture record first
    to confirm the runtime byte layout (is the payload a literal DDS blob or a re-wrapped surface? — inferred, not
    yet opened).
-3. **Authoring frontier (new textures)** — ingest a source DDS, emit an engine-accepted texture payload. Gated on an
-   **in-game acceptance test**, explicitly **stated-tier, never byte-exact**.
+3. **Authoring frontier (new *records* with new textures)** — ingest a source DDS, emit an engine-accepted texture
+   payload *as a record*. Gated on an **in-game acceptance test**, explicitly **stated-tier, never byte-exact**.
 
 **Exact format the stated-tier texture path must emit:** a standard **D3D9 DDS** — 128-byte header (`'DDS '` magic;
 height/width at 0x0C/0x10; FourCC at 0x54 ∈ {`DXT1`,`DXT3`,`DXT5`, or 0 + RGB flags for A8R8G8B8}; `dwMipMapCount`
@@ -117,17 +145,22 @@ per-asset cache form — expected.)
 
 - **Byte-inspected:** KWBandage build script + `.version` bytes + tree; SampleMod `Mod.xml` / unit records /
   `.w3x` texture-slot refs; 1723 DDS headers (fields only, **no pixels**); the SDK XSDs; OpenWrath tools vs
-  third-party BIGs/streams.
-- **Inferred / hypothesis-not-verified:** the **entire 4K-pack mechanism** (never downloaded); and whether the
-  compiled `Texture` payload is *literally* a DDS blob vs a re-wrapped surface (the XSD + `pipelineOnly` design
-  imply re-encode, but a shipped `Texture` runtime record was **not opened here** — confirm before milestone 2).
+  third-party BIGs/streams; **and the 4K pack itself** — NSIS install directives (`add-search-path`/`add-big`/
+  `add-config`) + DDS headers decompressed straight from its NSIS blocks (format/resolution/mips only, no pixels).
+- **Inferred / not-yet-opened:** whether the compiled *`Texture` record* payload is *literally* a DDS blob vs a
+  re-wrapped surface (the XSD + `pipelineOnly` design imply re-encode, but a shipped `Texture` runtime record was
+  **not opened here** — confirm before milestone 2). Note the 4K pack sidesteps this entirely: it ships loose DDS
+  **files**, not `Texture` records.
 
 ## Bottom line
 
 The texture and geometry paths are **"stated-tier achievable"** for OpenWrath, and the mechanism is fully
-characterized **without any mod content**. A new unit enters as asset **records**
-(`Texture`/`OnDemandTexture`/`PackedTextureImage` + the W3D model graph + `FXParticleSystemTemplate`) referencing raw
-**D3D9 DDS** files, packed in a BIG mounted via `add-big`/`add-config`, or overridden via the 0017 `.version`
-overlay. Build order: byte-exact texture **records** first (start with `PackedTextureImage`), shipped-payload
-pass-through next, and *new* HD content last as an explicit in-game-acceptance stated tier — never claimed byte-exact
-(EA's DXT compressor is not bit-reproducible).
+characterized **without any mod content**. Two distinct texture routes are now characterized (mechanisms byte-read;
+engine-honoring attested-not-tested): (1) **new content as asset
+records** — a new unit enters as `Texture`/`OnDemandTexture`/`PackedTextureImage` records + the W3D model graph +
+`FXParticleSystemTemplate`, referencing raw **D3D9 DDS**, packed in a BIG via `add-big`/`add-config` (Mod 2); and
+(2) **override existing textures as loose files** — drop correctly-pathed D3D9 DDS (DXT1/5, mip-chained, up to
+2048²) into a SkuDef `add-search-path` dir and the engine prefers them by name (Mod 3, the 4K pack — the whole 4K
+ecosystem rides this). Build order: **loose-file `add-search-path` override first** (cheapest, no record modeling,
+in-game-acceptance gate) → byte-exact texture **records** (`PackedTextureImage`) → shipped-payload pass-through →
+*new* record-borne HD content last — never claimed byte-exact (EA's DXT compressor is not bit-reproducible).
