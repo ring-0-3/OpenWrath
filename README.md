@@ -28,7 +28,7 @@ is careful not to conflate them:
   **GameObjects** including a full construction yard (`GDIConstructionYard`), the asset class other tools choke on.
 - **Ground-truth (byte-exact vs EA):** decompile a *shipped* stream, recompile, and byte-compare to the bytes the
   **game itself ships** (`tools/roundtrip.sh --from-binary`). This is the stronger claim. As of 2026-11-25, of
-  the **38 registered asset types, 35 reproduce shipped bytes byte-exact** on sampled instances; **GameObject is
+  the **40 registered asset types, 37 reproduce shipped bytes byte-exact** on sampled instances; **GameObject is
   40/50 (80%)**, with the residual fully characterized as `StringHashes`-table coverage — not a model defect
   (feeding the missing module-id tags makes those byte-exact too); Environment is structurally exact with one
   known-lossy reference; one type (Road) has no instances in the sampled streams to measure. The honest, per-type
@@ -37,10 +37,12 @@ is careful not to conflate them:
 Beyond the gameplay data types, the **art / content pipeline** now reproduces the whole **W3D model graph**
 byte-exact vs shipped bytes — **`W3DAnimation`** (seed-7 **125/125**, every channel codec), **`W3DMesh`**
 (**300/300**), and the connective tissue **`W3DContainer` / `W3DHierarchy` / `W3DCollisionBox`** (**150/150** each)
-— plus **particles** (**`FXParticleSystemTemplate`**, **150/150** + all 35 null-module edge cases). Where an asset
-ships in a lossy *compiled* form (animation's time-coded / adaptive-delta channels, the mesh's packed vertex
-buffer), OpenWrath **passes those bytes through** in their shipped form rather than re-encoding — byte-exact where a
-re-encoder never could be. (Sample-verified against shipped `static_common`, honestly bucketed — see COVERAGE.)
+— plus **particles** (**`FXParticleSystemTemplate`**, **150/150** + all 35 null-module edge cases) and the first
+**texture-pillar** records (**`PackedTextureImage`** / **`OnDemandTextureImage`**, whole-stream **870/870** and
+**123/123**). Where an asset ships in a lossy *compiled* form (animation's time-coded / adaptive-delta channels, the
+mesh's packed vertex buffer), OpenWrath **passes those bytes through** in their shipped form rather than re-encoding
+— byte-exact where a re-encoder never could be. (Sample-verified against shipped `static_common`, honestly bucketed
+— see COVERAGE.)
 
 **Inputs are verified too, not just outputs.** A committable `inputs.sha256` baseline + a `verify-inputs`
 preflight make the round-trip gate **refuse to run on a drifted bring-your-own input**, so a "verified" result

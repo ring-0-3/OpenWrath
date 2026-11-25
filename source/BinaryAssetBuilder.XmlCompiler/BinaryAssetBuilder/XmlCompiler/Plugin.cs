@@ -183,6 +183,18 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(MiscAudio), 0x92862F79u, false),
             (typeof(AudioSettings), 0xD842549Du, false),
             (typeof(AudioLOD), 0x8F6AD19Du, false),
+            // Texture UI-atlas data records (content pipeline, finding 0022). Plain data records (Base +
+            // a Texture/OnDemandTexture ref + three ICoord2D + Rotated); no pipelineOnly field, no lossy
+            // pixel path, so they round-trip byte-exact through the generic pipeline like the 0019/0020 types.
+            // TypeHashes HARVESTED from the shipped KW static_common manifest: 0x8AA0FF90 appears on all 870
+            // PackedTextureImage instances, 0xFBBF792D on all 123 OnDemandTextureImage instances (single
+            // distinct value each). NOT the commented GetExtendedTypeInformation scaffold values below
+            // (PackedTextureImage 0x2FAEB748 / OnDemandTextureImage 0xF3F4AEEC) — that table is the
+            // TiberiumWars type table (its ArmorTemplate 0x9CDD1086 is TW's, cf. the #if TIBERIUMWARS
+            // ArmorTemplate hash above), so those would be the wrong-version hash for this KW build
+            // (finding 0016's version-blindness class; 0020's TW-vs-KW trap).
+            (typeof(PackedTextureImage), 0x8AA0FF90u, false),
+            (typeof(OnDemandTextureImage), 0xFBBF792Du, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);

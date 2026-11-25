@@ -11,13 +11,13 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - ✅ Native-Linux port of BinaryAssetBuilder (runs under `dotnet`, no Wine), byte-faithful to EA's output.
 - ✅ Correct x64→32-bit on-disk pointer layout; case-insensitive paths; native XInclude / expressions / RefPack.
 - ✅ Cross-stream reference typing via reference manifests (`-rm`).
-- ✅ **38 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
+- ✅ **40 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
   breadth batch (Upgrade, SpecialPower, OCL, FXList, DamageFX, ExperienceLevel, LogicCommand(Set), Stance,
   RadiusCursor, Weather, Mouse, OnlineChatColors, ConnectionLineManager, PhaseEffect, Road, MultiplayerColor),
   the audio/LOD/environment batch (AmbientStream, MusicTrack, DialogEvent, LargeGroupAudioMap,
   Static/Dynamic GameLOD, GameLODPreset, CrowdResponse, VideoEventList, Environment, AudioEvent, Multisound,
-  MiscAudio, AudioSettings, AudioLOD), and the first content-pipeline data type (FXParticleSystemTemplate,
-  finding 0020).
+  MiscAudio, AudioSettings, AudioLOD), the first content-pipeline data type (FXParticleSystemTemplate,
+  finding 0020), and the first texture-pillar records (PackedTextureImage, OnDemandTextureImage, finding 0022).
 - ✅ Compile-fail bug-class fixes surfaced by the ground-truth gate (field-order error; out-of-schema enum
   values) — see Verification.
 - ✅ **MultiplayerColor** recompile fixed — modeled its inline `MetaGameSide` field (8/8 byte-exact). The one
@@ -62,9 +62,10 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
     byte-compare every asset to the **original shipped bytes**, bucketed per type (byte-exact / same-size
     value-diff / size-mismatch / recompile-missing, with first-diff offsets). This proves the output is *what
     the game actually loads*, and it has surfaced real bugs closed-loop alone could not.
-- ✅ **Ground-truth results (2026-11-24; FX added 2026-11-25):** of the 38 registered types, **35 reproduce EA's
-  shipped bytes byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide`
-  field; FXParticleSystemTemplate joined via the plain pipeline + a required-null-module decompiler fix, finding 0020);
+- ✅ **Ground-truth results (2026-11-24; FX + textures added 2026-11-25):** of the 40 registered types, **37 reproduce
+  EA's shipped bytes byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide`
+  field; FXParticleSystemTemplate joined via the plain pipeline + a required-null-module decompiler fix, finding 0020;
+  PackedTextureImage / OnDemandTextureImage joined via plain registration — whole-stream 870/870 and 123/123, finding 0022);
   GameObject is **40/50** on a *widened* sample, with the residual characterized as module-tag / weak-ref name
   recovery bounded by StringHashes coverage (byte-exact once the name is in the table); Environment is
   structurally exact with one known-lossy weak-ref; Road has no sampled instances. Full matrix, sampled
@@ -230,8 +231,17 @@ anyone can *check*, not merely trust.
   byte-exact; whole corpus 1674 decompile clean; regression-clean (Armor 207/207, Weapon 456/456, W3D still exact,
   schema-selftest pass, GameObject inert). Finding
   [0020](docs/findings/0020-fxparticlesystemtemplate-byte-exact-plain-pipeline-plus-required-empty-module.md).
-- 📋 **Art — textures (DDS).** Can't bit-reproduce EA's compressor, so a **stated weaker tier**, never reported as
-  byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
+- 🔧 **Art — textures (DDS).** Build order from 0021 (oracle-strongest first).
+  - ✅ **UI-atlas records** (`PackedTextureImage` / `OnDemandTextureImage`) — byte-exact via plain registration,
+    whole-stream 870/870 + 123/123, finding 0022.
+  - 🔎 **`Texture` / `OnDemandTexture` record layout** characterized (finding 0023, Recon): the `Texture` record is
+    a 12-byte header + a **literal D3D9 DDS blob** (DXT1/3/5 + uncompressed, full mip chain), relocated by one relo
+    entry; `OnDemandTexture` is an 8-byte all-zero lazy placeholder. Next milestone: **shipped-payload pass-through**
+    (the W3DMesh/0018 pattern) → byte-exact for *shipped* textures without reimplementing the compressor.
+  - 📋 **New/authored textures (the pixel path).** Can't bit-reproduce EA's DXT compressor, so a **stated weaker
+    tier**, never reported as byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
+  - 📋 **Loose-file `add-search-path` override** (the route the 4K pack rides) — a packaging feature gated on
+    in-game acceptance, not a compiler change; separate later phase.
 - 📋 **Maps** (greenfield `.map` reader + writer; 96 shipped maps as corpus) and **sound** (native EALayer3
   decode; faithful-not-identical re-encode) — later pillars, each its own dedicated run.
 - 📋 **Art / asset compilers** for new-content mods — the big build. Unlocks making *new* assets, not just editing
