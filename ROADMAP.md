@@ -7,6 +7,41 @@ output. Help is welcome on anything below — especially the 🔧 and 📋 items
 
 Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 
+## Go-forward sequence (priority order)
+
+The per-area sections below hold the detail; this is the **path**. OpenWrath is crossing from an *interop toolchain*
+(read/write existing KW assets byte-exact — nearly complete: the data types, the whole W3D model graph, particles,
+and the texture records) to a *creation platform* (author new content — the §4 frontier). The ordering is by oracle
+strength: finish what's decidable, then validate the keystone, then the frontier.
+
+1. 🔧 **`Texture` / `OnDemandTexture` shipped-payload pass-through** (current phase; spec in finding
+   [0023](docs/findings/0023-texture-ondemandtexture-record-layout-recon.md)). Byte-exact for *shipped* textures via
+   the 0018 pass-through pattern (the record is a literal DDS blob) — closes the texture *records*. Authoring *new*
+   textures stays stated-tier.
+2. 📋 **Finish the byte-exact surface** (oracle-strong, cheap). Sweep the remaining "Not modeled" types for
+   registration-only wins (as the atlas records / particles turned out to be); **`AudioFile`** (likely a
+   records-tractable + encoded-payload-pass-through split, like textures — shipped audio byte-exact, new audio
+   stated-tier); widen coverage beyond `static_common`; close the **GameObject residual** (StringHashes coverage);
+   generate + commit the `inputs.sha256` baseline (invariant 4). Keep the foundation honest.
+3. 📋 **The re-pack equality gate on `W3DMeshProcessor`** — the **keystone**. Decidable (decode a shipped mesh →
+   re-pack → byte-compare to shipped), so it fits the oracle, not a frontier leap. Validates the **currently
+   unverified** packer *and* is the precondition for both the Blender exporter and new-geometry authoring — highest
+   single-piece leverage. Design: [blender-integration](docs/design/blender-integration.md).
+4. 📋 **Semantic mesh decode** (packed vertex buffer → positions / normals / UVs / bone weights). Unlocks the Blender
+   **viewer** (the lower-risk half). The pass-through work already exposed the exact vertex layout, so this is bounded
+   engineering, not research.
+5. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
+   path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
+   modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.
+6. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **Blender integration**
+   proper (viewer → exporter, gated on 3/4); **new-content authoring** (meshes via the re-pack gate, textures
+   stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map corpus); **sound** (EALayer3, frontier).
+   Detail in the Content-pipeline and Platform sections below.
+
+**Tier discipline past the byte-exact surface:** authoring / new content is the §4 frontier — use a *decidable gate*
+where one exists (the re-pack equality test), a **stated** weaker tier (in-game acceptance) where it doesn't, and
+never report a stated tier as byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
+
 ## Compiler (XML → binary)
 - ✅ Native-Linux port of BinaryAssetBuilder (runs under `dotnet`, no Wine), byte-faithful to EA's output.
 - ✅ Correct x64→32-bit on-disk pointer layout; case-insensitive paths; native XInclude / expressions / RefPack.
