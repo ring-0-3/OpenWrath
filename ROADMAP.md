@@ -200,6 +200,19 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     streams (avoids C&C:Online / replay desync).
   - 📋 installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler binary, so
     setup is "install + init" rather than "clone + build".
+  - 📋 **GameObject-override robustness — three real bugs hit modding the GDI construction yard (2026-11-25).**
+    (a) **Unnamed stock modules block an `inheritFrom` override.** When a stock GameObject carries a module with
+    no `id` (the GDI conyard's `StructureUnpackUpdate`), `mod check` + the compiler reject an `inheritFrom`
+    override of it (`has an unnamed module …`). Auto-name unnamed base modules (or let the override proceed).
+    (b) **The `mod package` block-extractor (`_find_toplevel_block`) is indent-sensitive.** A full/decompiled
+    override whose indentation isn't uniform gets its element body truncated in the assembled `static.xml`
+    (`GameObject start tag … does not match end tag of AssetDeclaration`). Make block extraction tag-depth-based,
+    not indent-based — so a decompiled asset is directly usable as an override source.
+    (c) **`inheritFrom` overrides pull unexpanded base `#define` macros.** The sliced base can contain macro
+    values (`CampnessValue="CAMPNESS_CONYARD"`) that fail the package compile (ExpressionEvaluator is off in that
+    path); the define-slicer (finding [0015]) doesn't always harvest them. Harvest/expand the base's defines.
+    *Workaround used:* a self-contained **decompiled** full override (clean values, no base include) — works once
+    its indentation is uniform (bug b).
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
 
