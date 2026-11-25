@@ -149,6 +149,12 @@ public class Plugin : IAssetBuilderPlugin
             (typeof(SpecialPowerTemplate), 0x5EF0ACA9u, false),
             (typeof(ObjectCreationList), 0x683D4DE5u, false),
             (typeof(FXList), 0xEBE8A8A4u, false),
+            // FXParticleSystemTemplate TypeHash harvested from the shipped KW static_common manifest
+            // (0xA0C56702 appears on all 1674 FX instances). NOT the commented GetExtendedTypeInformation
+            // scaffold value 0xA148D511 below — that table is the TiberiumWars type table (its ArmorTemplate
+            // 0x9CDD1086 is TW's, cf. the #if TIBERIUMWARS WeaponTemplate/ArmorTemplate hashes above), so it
+            // would be the wrong-version hash for this KW build (finding 0016's version-blindness class).
+            (typeof(FXParticleSystemTemplate), 0xA0C56702u, false),
             (typeof(DamageFX), 0x4DF81EBDu, false),
             (typeof(ExperienceLevelTemplate), 0xAE55047Bu, false),
             (typeof(LogicCommand), 0x97D0A46Eu, false),

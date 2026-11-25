@@ -28,6 +28,11 @@ namespace BinaryAssetBuilder.Decompiler
             public readonly List<string> OwnAttributes = new();
             public readonly List<string> AttributeGroupRefs = new();
             public readonly List<string> OwnElements = new();
+            // Of OwnElements, those the XSD declares as REQUIRED (minOccurs absent => default 1, or >= 1).
+            // A required child element must be present in the authoring XML even when the binary field is null
+            // (e.g. FXParticleSystemTemplate.Velocity : minOccurs=1 but its inner module choice is minOccurs=0),
+            // so the decompiler emits an empty wrapper for it. See StructReader.ReadPointerField.
+            public readonly HashSet<string> RequiredElements = new(StringComparer.Ordinal);
             // elemName -> its `type=` (named types only), for direct child elements of this type. Lets a field the
             // XSD declares as a typed child element (e.g. SubObject.RenderObject : RenderObjectReference) be mapped
             // from the field name to its schema type.
@@ -189,6 +194,11 @@ namespace BinaryAssetBuilder.Decompiler
                     if (en != null && e.Ancestors(Xs + "complexType").FirstOrDefault() == root)
                     {
                         c.OwnElements.Add(en);
+                        // minOccurs absent => XSD default of 1 (required); only an explicit "0" makes it optional.
+                        if ((string)e.Attribute("minOccurs") != "0")
+                        {
+                            c.RequiredElements.Add(en);
+                        }
                         string et = Local((string)e.Attribute("type"));
                         if (et != null && !c.OwnElementTypes.ContainsKey(en))
                         {
@@ -276,6 +286,46 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 foreach (string el in ct.OwnElements) into.Add(el);
                 if (ct.BaseType != null) CollectElements(ct.BaseType, into, visiting);
+            }
+        }
+
+        private readonly Dictionary<string, HashSet<string>> _resolvedReqElems = new(StringComparer.Ordinal);
+
+        // Declared REQUIRED CHILD-ELEMENT local-names for a complex type (minOccurs >= 1, inherited base folded
+        // in). Used to emit an empty wrapper for a required child element whose binary field is null, so the
+        // recompiled XML still validates (and compiles back to the same null). null if schema unavailable /
+        // type unknown.
+        public HashSet<string> GetRequiredElementNames(string typeName)
+        {
+            if (!_available)
+            {
+                return null;
+            }
+            if (_resolvedReqElems.TryGetValue(typeName, out HashSet<string> cached))
+            {
+                return cached;
+            }
+            if (!_complexTypes.ContainsKey(typeName))
+            {
+                _resolvedReqElems[typeName] = null;
+                return null;
+            }
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            CollectRequiredElements(typeName, names, new HashSet<string>(StringComparer.Ordinal));
+            _resolvedReqElems[typeName] = names;
+            return names;
+        }
+
+        private void CollectRequiredElements(string typeName, HashSet<string> into, HashSet<string> visiting)
+        {
+            if (typeName == null || !visiting.Add(typeName))
+            {
+                return;
+            }
+            if (_complexTypes.TryGetValue(typeName, out ComplexType ct))
+            {
+                foreach (string el in ct.RequiredElements) into.Add(el);
+                if (ct.BaseType != null) CollectRequiredElements(ct.BaseType, into, visiting);
             }
         }
 

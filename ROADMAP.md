@@ -11,12 +11,13 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
 - ✅ Native-Linux port of BinaryAssetBuilder (runs under `dotnet`, no Wine), byte-faithful to EA's output.
 - ✅ Correct x64→32-bit on-disk pointer layout; case-insensitive paths; native XInclude / expressions / RefPack.
 - ✅ Cross-stream reference typing via reference manifests (`-rm`).
-- ✅ **37 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
+- ✅ **38 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
   breadth batch (Upgrade, SpecialPower, OCL, FXList, DamageFX, ExperienceLevel, LogicCommand(Set), Stance,
-  RadiusCursor, Weather, Mouse, OnlineChatColors, ConnectionLineManager, PhaseEffect, Road, MultiplayerColor)
-  and the audio/LOD/environment batch (AmbientStream, MusicTrack, DialogEvent, LargeGroupAudioMap,
+  RadiusCursor, Weather, Mouse, OnlineChatColors, ConnectionLineManager, PhaseEffect, Road, MultiplayerColor),
+  the audio/LOD/environment batch (AmbientStream, MusicTrack, DialogEvent, LargeGroupAudioMap,
   Static/Dynamic GameLOD, GameLODPreset, CrowdResponse, VideoEventList, Environment, AudioEvent, Multisound,
-  MiscAudio, AudioSettings, AudioLOD).
+  MiscAudio, AudioSettings, AudioLOD), and the first content-pipeline data type (FXParticleSystemTemplate,
+  finding 0020).
 - ✅ Compile-fail bug-class fixes surfaced by the ground-truth gate (field-order error; out-of-schema enum
   values) — see Verification.
 - ✅ **MultiplayerColor** recompile fixed — modeled its inline `MetaGameSide` field (8/8 byte-exact). The one
@@ -39,7 +40,7 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   fixed this way (an `ActiveBody` field-order error; an out-of-schema enum case; the shared draw-module
   `SetAnimsToLastFrameOnConstructionComplete` default), bringing GameObjects to **40/50 byte-exact** vs shipped
   with the residual characterized (see below). Art / W3D are handled by their own pillar (W3DAnimation is already
-  byte-exact); textures / particles → content pipeline.
+  byte-exact); particles (`FXParticleSystemTemplate`) are byte-exact (finding 0020); textures → content pipeline.
 - ✅ **RefPack detection + single authority** (finding [0012]). RefPack is identified by its **second** byte
   (`0xFB`); the first byte is a flags byte that *varies* (`0x10`/`0x11`/`0x90`/`0x91` — `0x90` ships on
   `static_common.bin`). A first guard matched only `0x10FB`, so other variants misreported as "Xbox360
@@ -61,8 +62,9 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
     byte-compare every asset to the **original shipped bytes**, bucketed per type (byte-exact / same-size
     value-diff / size-mismatch / recompile-missing, with first-diff offsets). This proves the output is *what
     the game actually loads*, and it has surfaced real bugs closed-loop alone could not.
-- ✅ **Ground-truth results (2026-11-24):** of the 37 registered types, **34 reproduce EA's shipped bytes
-  byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide` field);
+- ✅ **Ground-truth results (2026-11-24; FX added 2026-11-25):** of the 38 registered types, **35 reproduce EA's
+  shipped bytes byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide`
+  field; FXParticleSystemTemplate joined via the plain pipeline + a required-null-module decompiler fix, finding 0020);
   GameObject is **40/50** on a *widened* sample, with the residual characterized as module-tag / weak-ref name
   recovery bounded by StringHashes coverage (byte-exact once the name is in the table); Environment is
   structurally exact with one known-lossy weak-ref; Road has no sampled instances. Full matrix, sampled
@@ -216,6 +218,18 @@ anyone can *check*, not merely trust.
   corpus decompiles clean (finding
   [0019](docs/findings/0019-w3dcontainer-hierarchy-collisionbox-byte-exact-plain-pipeline.md)). Closes the W3D
   model graph.
+- ✅ **Particles — `FXParticleSystemTemplate` byte-exact vs shipped** (content pipeline, first *data* type). An
+  ordinary data type that was only ever un-registered: the model + full polymorphic-module marshaler suite
+  (Physics / Draw / Volume / Velocity / Update / Event) already existed, so it round-trips through the **plain
+  pipeline** — one registration line, **no** runtime pass-through, **no** in-code schema binding. KW TypeHash
+  `0xA0C56702` harvested from shipped `static_common` (the commented scaffold's `0xA148D511` is the TiberiumWars
+  table — 0016 version-trap avoided); comparator-wildcarded, so harvested-not-oracle-verified. One schema-driven
+  decompiler fix: a required (`minOccurs=1`) single polymorphic-module element whose binary pointer is null (the
+  reworked-laser / Redeemer / beam / railgun family) decompiles to an **empty wrapper** (`<Velocity/>`) — which
+  compiles straight back to the null pointer, byte-exact. seed-7 **150/150** + all **35** null-module systems
+  byte-exact; whole corpus 1674 decompile clean; regression-clean (Armor 207/207, Weapon 456/456, W3D still exact,
+  schema-selftest pass, GameObject inert). Finding
+  [0020](docs/findings/0020-fxparticlesystemtemplate-byte-exact-plain-pipeline-plus-required-empty-module.md).
 - 📋 **Art — textures (DDS).** Can't bit-reproduce EA's compressor, so a **stated weaker tier**, never reported as
   byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
 - 📋 **Maps** (greenfield `.map` reader + writer; 96 shipped maps as corpus) and **sound** (native EALayer3

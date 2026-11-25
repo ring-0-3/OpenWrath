@@ -28,21 +28,24 @@ Two senses of "correct" are kept distinct, because conflating them would overcla
 
 ## What is registered
 
-The compiler registers **37 asset types** (the `foreach` in
-`source/BinaryAssetBuilder.XmlCompiler/BinaryAssetBuilder/XmlCompiler/Plugin.cs`, `Initialize()`). Those 37 are
-the authoritative supported set. The decompiler can additionally *name* and structurally walk more types than
+The compiler registers **38 asset types** (the `foreach` in
+`source/BinaryAssetBuilder.XmlCompiler/BinaryAssetBuilder/XmlCompiler/Plugin.cs`, `Initialize()`). Those 38 are
+the authoritative supported set (the 38th, `FXParticleSystemTemplate`, joined 2026-11-25 — see below). The decompiler can additionally *name* and structurally walk more types than
 that for inspection (it labels anything it can't fully model as `<RawAsset>`/`<UnknownModule>` rather than
 crashing), but only the 37 below have full compile support, so only they can round-trip.
 
 ## Status by type (sample-verified against shipped bytes)
 
-Headline: **of 37 registered types, 34 reproduce EA's shipped bytes byte-exact on the sampled instances**
-(MultiplayerColor joined this set 2026-11-24 — see below), and **GameObject is now mostly byte-exact too**
+Headline: **of 38 registered types, 35 reproduce EA's shipped bytes byte-exact on the sampled instances**
+(MultiplayerColor joined this set 2026-11-24; FXParticleSystemTemplate — the first content-pipeline *data* type —
+2026-11-25, see the art/content-pipeline section and finding
+[0020](../findings/0020-fxparticlesystemtemplate-byte-exact-plain-pipeline-plus-required-empty-module.md)),
+and **GameObject is now mostly byte-exact too**
 (**40/50 = 80%** of a *widened* random sample) after closing its dominant draw-module value-diff; Environment is
 structurally exact with a single residual value-diff that is a known-lossy reference (characterized below); 1 has
 no instances in the sampled streams to measure here (Road). There is no longer a `RECOMPILE-MISSING` type.
 
-### Byte-exact vs EA shipped bytes — sample-verified (34)
+### Byte-exact vs EA shipped bytes — sample-verified (35)
 
 Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXACT`.
 
@@ -82,6 +85,7 @@ Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXA
 | MiscAudio | global_common | TheMiscAudio |
 | AudioSettings | global_common | TheAudioSettings |
 | AudioLOD | global_common | High |
+| FXParticleSystemTemplate | static_common | seed-7 sample **150/150** + all 35 required-null-module systems (RedeemerLaserGlow3 …); whole corpus 1674 decompile ok, raw=0 |
 
 > "Sample-verified" means specific instances were confirmed byte-exact against shipped bytes — not that every
 > instance of the type is proven. It is strong positive evidence for the type's model, not a whole-corpus
@@ -242,14 +246,33 @@ is earned by the current, BYO-clean pipeline — not by any edit to a bring-your
   Xenon path is untouched; defensive-not-verified branches (empty `SubObject` list; a `RenderObject` referencing a
   type other than W3DMesh/W3DCollisionBox) have no shipped instance to compare against.
 
-## Not modeled (out of the 37)
+- **FXParticleSystemTemplate — byte-exact via the plain data pipeline (2026-11-25, finding
+  [0020](../findings/0020-fxparticlesystemtemplate-byte-exact-plain-pipeline-plus-required-empty-module.md)).** The
+  first **content-pipeline data type** (particles) to reach the ground-truth bar. TypeId `0x28E7FD7F`, TypeHash
+  **`0xA0C56702`** harvested from the shipped KW `static_common` manifest (⚠ *not* the commented TW scaffold's
+  `0xA148D511` — version trap). Model + full polymorphic-module marshaler suite already existed; it needed **only
+  the one-line registration** (no runtime pass-through, no in-code schema binding). The one decompiler refinement:
+  a schema-required single polymorphic module whose binary pointer is null (the reworked-laser / beam family) now
+  decompiles to an **empty wrapper** (`<Velocity/>`) — schema-driven on `minOccurs`, byte-exact (an empty wrapper
+  compiles back to the null pointer).
+
+  | Type | TypeId | TypeHash (shipped, harvested) | Stream | Whole-corpus decompile | Sample |
+  |------|--------|-------------------------------|--------|------------------------|--------|
+  | FXParticleSystemTemplate | `0x28E7FD7F` | `0xA0C56702` | static_common | 1674 ok, raw=0 | seed-7 **150/150** + all **35** required-null-module systems BYTEEXACT |
+
+  Zero value-diffs. All in-corpus Physics/Draw/Volume/Velocity/Update/Event variants exercised. No regression
+  (Armor 207/207, Weapon 456/456, W3DAnimation + W3DMesh byte-exact, schema-selftest PASS, GameObject unaffected).
+  **Unmeasured:** only `static_common`; the `TerrainFire` volume + `Hemisphere` velocity variants have no shipped
+  instance here; TypeHash is harvested-not-oracle-verified (comparator wildcard); big-endian / Xenon untouched.
+
+## Not modeled (out of the 38)
 
 Types the decompiler encounters in shipped streams but the compiler does **not** register — e.g.
-`FXParticleSystemTemplate`, `Texture`, `AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the
+`Texture`, `AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the
 UI/button/AI-strategy families. The decompiler labels these rather than crashing, but they cannot round-trip. The
 remaining art / texture / audio-file families belong to the planned **content pipeline**, not the data toolchain;
-see `../../ROADMAP.md`. (`W3DAnimation`, `W3DMesh`, `W3DContainer`, `W3DHierarchy` and `W3DCollisionBox` have now
-left this list — see the art-pipeline section above.)
+see `../../ROADMAP.md`. (`W3DAnimation`, `W3DMesh`, `W3DContainer`, `W3DHierarchy`, `W3DCollisionBox` and
+`FXParticleSystemTemplate` have now left this list — see the art/content-pipeline section above and finding 0020.)
 
 ## Known decompiler (read-direction) limitations
 

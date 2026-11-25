@@ -499,7 +499,20 @@ namespace BinaryAssetBuilder.Decompiler
         {
             if (!_asset.ReloFroms.Contains(off))
             {
-                return; // null pointer -> emit nothing
+                // Null pointer -> normally emit nothing. EXCEPTION: a single polymorphic-module pointer
+                // (e.g. FXParticleSystemTemplate.Velocity / .Physics, GameObject.Body) whose XSD element is
+                // REQUIRED (minOccurs >= 1) while its inner module choice is itself optional (minOccurs=0).
+                // EA's authoring XML for such a null field carried an EMPTY wrapper (<Velocity/>); omitting it
+                // would fail XSD validation on recompile. The empty wrapper compiles straight back to the null
+                // pointer (Marshaler.MarshalSinglePolymorphic sees 0 child nodes and leaves the pointer null),
+                // so it is byte-exact. Fully schema-driven: keys on the element being schema-required for the
+                // current type, never on a field name. (A required NON-module pointer is left as-is.)
+                if (typeof(IPolymorphic).IsAssignableFrom(elem)
+                    && _schema?.GetRequiredElementNames(_curTypeName)?.Contains(name) == true)
+                {
+                    target.Add(new XElement(_ns + name));
+                }
+                return;
             }
             uint to = _asset.ReadSlot(off);
 
