@@ -100,11 +100,13 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   wired into **both** round-trip gates (`roundtrip.sh`, `corpus-roundtrip.sh`): drift → hard-abort before the
   round-trip, no baseline yet → warn + continue. Enforcement switches on automatically the moment `inputs.sha256`
   is generated from the clean set and committed (step 2). *Remaining:* generate + commit `inputs.sha256`.
-  **⚠ Version-blindness (finding [0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)):**
-  the baseline must be the **running patch version** the engine loads (1.3 / the patch `Static_mod`), not
-  `Core/1.0` or a raw retail `static_common`. `inputs.sha256` currently records *no* patch version, so a
-  pristine-but-stale (1.0) baseline would pass every input check and still crash the game on a `0010` TypeHash
-  mismatch. The baseline step must pin, and record, the patch version.
+  **⚠ Version-blindness (finding [0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md),
+  corrected):** the loadable static world is a **base + overlay chain**, not one file — Core/1.0 `static_common`
+  (the 195 MB full byte pool) plus the active, version-matched overlay (1.3 = the patch `Static_mod`, a complete
+  entry list with 1.3 TypeHashes but sparse data). The baseline must capture the **chain** and record the **patch
+  version**. `inputs.sha256` currently records *no* patch version, so a pristine-but-stale (1.0-only) baseline would
+  pass every input check and still crash the game on a `0010` TypeHash mismatch (e.g. `DefaultHotKeys`
+  `0x692d0b3a`→`0x12cb83dc`, which drifted at 1.1). The baseline step must pin, and record, the patch version.
 - 📋 **BYO / EA-sourced inputs are read-only.** Schemas and game data are never modified in place; OpenWrath's
   additions live in owned, tracked files or in code. Encoded in `CLAUDE.md` and the subagent-spec template so it
   can't recur. (finding [0013])
@@ -129,18 +131,28 @@ Legend: ✅ done & verified · 🔧 in progress · 📋 planned
   - ✅ `trace` / `uses` — walk the reference graph (outgoing / incoming) to find what to mod and what depends on it.
   - ✅ `mod new` / `mod add <asset>` — scaffold a project and pull an asset in as an editable override
     (from the SDK source), closing the loop: `trace` → `add` → edit → `bake`.
-  - 🔧 `mod package` — builds a **correct, zero-EA overlay diff** (its own `static_mod` + SkuDef + README,
-    fsync+integrity-verified, byte-identical on a no-change override; 1-asset and 13-asset GameObject/macro mods;
-    a hard gate refuses to ship any undeclared/EA asset; inheritFrom bases sliced to single assets carrying their
-    `<Defines>` macro context). **But that diff is *not a loadable standalone mod*** — the in-game launch revealed
-    (finding **[0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)**) that the
-    static `_mod` stream **replaces** `static_common` wholesale (EA's own 1.03 patch ships a *complete* 21,747-asset
-    `Static_mod`; the `.version` postfix selects one complete stream per family), so a *partial* stream crashes at
-    skirmish load. A loadable standalone binary mod needs the full, version-matched base dataset = EA content —
-    a zero-EA **shareable** standalone is therefore not possible. Go-forward: ship the zero-EA diff +
-    **assemble-at-install** recipient-side (keeps the diff zero-EA), or `mod bake` into a complete stream. The
-    builder/diff mechanism (xi:include for new assets, sliced inheritFrom base for overrides) is in
-    **[0015](docs/findings/0015-standalone-overlay-override-needs-sliced-inheritfrom-base.md)**.
+  - ✅ **Loadable base-game override mod SOLVED (finding
+    [0017](docs/findings/0017-overlay-mod-overrides-base-gameplay-the-complete-recipe.md)).** A tiny overlay that
+    overrides base gameplay on retail 1.3 was achieved **in-game** (a WeaponTemplate's fire-rate / ClipSize /
+    AttackRange all took effect, no crash). The recipe: a **sparse differential** (complete entry list, data only
+    for the changed assets, `\x02` defer to `static_common_2`) + a **low-LOD twin** (`static_l_mod` → `static_mod`)
+    + the **WorldBuilder companion** (`worldbuilder_mod`) + the **three `.version` redirect files** (`static`,
+    `static_l`, `worldbuilder` = `_mod\n`) + the **base's max-chunk header kept** (not recomputed — the final
+    crash) + unique per-stream checksum. Builder codified + verified byte-exact: `modkit/lib/build_overlay.py`
+    (+ `retag_checksum.py`). 0016's "must be complete data" / checksum-collision theories are withdrawn; 0005 is
+    refined (an overlay IS consulted, via the `.version` redirect).
+  - 🔧 `mod package` → **the shareable deliverable.** Builds the **zero-EA overlay diff** (only the user's declared
+    overrides; hard gate refuses any undeclared/EA asset; sliced `inheritFrom` bases carry their `<Defines>` macro
+    context; fsync+integrity-verified — finding
+    [0015](docs/findings/0015-standalone-overlay-override-needs-sliced-inheritfrom-base.md)). Go-forward: emit the
+    **strict zero-EA diff + a bundled recipient-side assembler** (the project's chosen default — ships *nothing*
+    EA-derived; the recipient's own `static_common_2`/`worldbuilder_2` supply the entry-list metadata locally;
+    design: **[diff-plus-assemble-at-install](docs/design/diff-plus-assemble-at-install.md)**). A full ~6MB
+    **drop-in** is possible but **LOCAL-ONLY** (it carries EA-derived entry-list metadata), so OpenWrath never
+    presents it as shareable. Also valid: `mod bake` into an existing complete stream (SI).
+  - 📋 **multi-mod merger** — select N mods → bake their diffs into ONE overlay so all features run (one static
+    stream owns a family, so overlay mods are otherwise mutually exclusive — 0017). Clash detection/resolution is
+    future work.
   - ✅ `mod check` — pre-flight validation: dangling references + unknown fields / schema errors with `file:line`,
     plus per-type schema drift vs the target. Runs **automatically before a bake** (`--no-check` to skip).
   - 📋 base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game

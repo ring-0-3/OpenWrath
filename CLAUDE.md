@@ -58,3 +58,21 @@ is it a StringHash (→ harvest) or source-drift (→ document and bucket, don't
 - `docs/findings/` — dated truths; **0012** (RefPack fix pending), **0013** (schema-edit remediation).
 - `docs/reference/COVERAGE.md` — the per-type ground-truth matrix.
 - `ROADMAP.md` — go-forward plan + the input-integrity preflight.
+
+## SOLVED: loadable mods that override base gameplay (finding 0017 — do NOT re-derive)
+
+A **loadable, (near-)zero-EA mod that overrides base KW gameplay on retail 1.3 is SOLVED** and verified in-game
+(2026-11-25). The complete recipe, byte-level structure, full failure catalog, and the builder are in
+**`docs/findings/0017-overlay-mod-overrides-base-gameplay-the-complete-recipe.md`** — read it before touching mod
+packaging. One-line shape: a **sparse differential** `static_mod` (complete entry list, data only for your edits,
+`\x02` defer to `static_common_2`) + a **low-LOD twin** (`static_l_mod`→`static_mod`) + the **WorldBuilder
+companion** (`worldbuilder_mod`) + **three `.version` redirect files** (`_mod\n`) + **the base's max-chunk header
+kept** (not recomputed — the final crash) + unique per-stream checksum. Builder: `modkit/lib/build_overlay.py`
+(+ `retag_checksum.py`), verified byte-exact against the working artifact. Key gotchas that burned a whole session:
+**R23/tournament maps crash at match-start on their own** (always test on a standard map; distinguish launch-crash
+vs match-crash vs loaded-but-ignored); the gameplay schema is **identical 1.2↔1.3** (defer to `static_common_2` is
+version-safe; the "1.3 patch" is textures). Distribution: OpenWrath's **default is strict zero-EA** (ship the diff +
+a bundled recipient-side assembler; the drop-in carries EA-derived entry-list metadata and is **LOCAL-ONLY**).
+0016's "must be complete data"/checksum-collision theories are **withdrawn** (see its banner); 0005 is **refined**
+(an overlay IS consulted, via the `.version` redirect). Only one overlay owns a family → overlay mods are mutually
+exclusive; stacking needs merging diffs into one overlay (planned `multi-mod merger`).

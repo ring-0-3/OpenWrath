@@ -590,6 +590,56 @@ def test_skudef_and_registration_line():
     assert "MyMod.skudef" in readme and "AssetA" in readme and "static_mod" in readme
 
 
+def _fake_manifest(path, type_hashes):
+    """Hand-build a minimal v5 linked manifest (header + entries, no name/ref buffers) carrying the given
+    [(tid, th)] entries, enough for parse_manifest / the drift guard. No EA content."""
+    n = len(type_hashes)
+    hdr = bytearray(b"\x00\x01\x05\x00")                  # isBE,isLinked,version
+    h = [0] * 11
+    h[2] = n                                              # asset count; arsz/rmsz/ansz (7,8,9) stay 0
+    hdr += struct.pack("<11I", *h)
+    for i, (tid, th) in enumerate(type_hashes):
+        e = bytearray(44)
+        struct.pack_into("<4I", e, 0, tid & 0xffffffff, (0x1000 + i), th & 0xffffffff, 0)
+        struct.pack_into("<i", e, 24, -1)                 # NameOffset < 0 -> name=None
+        hdr += e
+    Path(path).write_bytes(bytes(hdr))
+    return path
+
+
+def test_insert_drift_guard():
+    """finding 0010: an INSERT whose TypeHash differs from the stream's hash for that type must ABORT
+    (default) and ADOPT the stream hash only with adopt_schema=True. REPLACE never reaches here. The
+    asset's own hash is read from its filename (tid.th.iid.ih.asset), the stream's from its manifest —
+    both the single-source format readers, shared by `mod bake` and `mod build-local`."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-guard-"))
+    mf = _fake_manifest(tmp / "static_mod.manifest", [(0xAAAA, 0x1111), (0xBBBB, 0x2222)])
+    af = lambda tid, th: (tid, 0x1, Path(f"{tid:08x}.{th:08x}.00000001.00000002.asset"), tmp / "x.manifest")
+    # no inserts -> no work
+    assert ow._insert_drift_guard([], Path(mf), False) == {}
+    # matching hash -> no drift
+    assert ow._insert_drift_guard([af(0xAAAA, 0x1111)], Path(mf), False) == {}
+    # a type the stream doesn't have -> not drift (brand-new type, fine to insert)
+    assert ow._insert_drift_guard([af(0xCCCC, 0x9999)], Path(mf), False) == {}
+    # drifted hash, no adopt -> abort
+    try:
+        ow._insert_drift_guard([af(0xAAAA, 0xDEAD)], Path(mf), False)
+        assert False, "expected SystemExit on drift without --adopt-schema"
+    except SystemExit:
+        pass
+    # drifted hash, adopt -> returns {tid: stream_hash}
+    assert ow._insert_drift_guard([af(0xAAAA, 0xDEAD)], Path(mf), True) == {0xAAAA: 0x1111}
+
+
+def test_local_readme_is_loud_about_sharing():
+    """build-local output is EA-derived; its README must shout LOCAL-ONLY and point at the zero-EA path."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-lreadme-"))
+    ow._write_local_readme(tmp, "MyLocal", {}, "static_mod", "102texturefix.big")
+    r = (tmp / "README.txt").read_text()
+    assert "LOCAL-ONLY" in r and "DO NOT SHARE" in r
+    assert "mod package" in r and "static_mod" in r
+
+
 # --- runner (used when pytest is absent) -------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

@@ -24,7 +24,9 @@ modkit/openwrath show                # print the resolved config and flag anythi
 modkit/openwrath mod bake <project>  # compile a mod's overrides + splice them into its target stream + install
 modkit/openwrath mod revert <target> # restore a target's big from the last openwrath backup
 modkit/openwrath mod check <project>   # pre-flight: dangling refs / unknown fields / schema drift (file:line)
-modkit/openwrath mod package <project> # build a zero-EA overlay DIFF (not yet a loadable standalone — see docs/findings/0016)
+modkit/openwrath mod package <project> # build the zero-EA overlay DIFF (shareable via assemble-at-install)
+# Loadable base-game override mod on retail 1.3 is SOLVED — the proven recipe + builder: docs/findings/0017,
+# modkit/lib/build_overlay.py (sparse differential + low-LOD twin + worldbuilder companion + 3 .version redirects).
 ```
 
 **`init` is the one command to start with.** It runs auto-detection, then for each bring-your-own
@@ -93,15 +95,21 @@ See `config.example.toml` for the full schema.
       (from the SDK source, so it reads cleanly even for types the decompiler can't walk from the stream),
       closing the loop: `trace` → `add` → edit a value → `bake`. `mod add` also **warns at add time** if the
       asset's type is schema-drifted in the target stream, so you learn it then rather than at bake time.
-- [~] `mod package` — builds a **correct, zero-EA overlay diff** (a `static_mod` carrying only your declared
-      overrides/additions and *importing* the rest by id; inheritFrom bases sliced to single assets carrying their
-      `<Defines>` macro context so no EA sibling embeds; a hard gate refuses any undeclared/EA asset; fsync +
-      integrity-verified, `docs/findings/0007`; byte-identical on a no-change override). **It is NOT yet a loadable
-      standalone mod:** the in-game launch showed the static `_mod` stream *replaces* `static_common` and must be
-      **complete and version-matched** (finding `docs/findings/0016`), so a partial standalone crashes. A zero-EA
-      *shareable* standalone binary mod isn't possible on retail KW; the loadable paths are **diff +
-      assemble-at-install** (keeps the shared artifact zero-EA) or `mod bake` into a complete stream. See
-      `docs/findings/0015` (the diff builder) and `docs/findings/0016` (why it can't drop in as-is).
+- ✅ **Loadable base-game override mod — SOLVED (`docs/findings/0017`).** A tiny overlay that overrides base
+      gameplay on **retail 1.3** was verified **in-game** (a WeaponTemplate's fire-rate / ClipSize / AttackRange all
+      applied, no crash). Recipe: a **sparse differential** (complete entry list, data only for your edits, `\x02`
+      defer to `static_common_2`) + **low-LOD twin** (`static_l_mod`→`static_mod`) + **WorldBuilder companion**
+      (`worldbuilder_mod`) + **three `.version` redirect files** (`_mod\n`) + **the base's max-chunk header kept**
+      (the final crash) + unique per-stream checksum. Builder codified + verified byte-exact:
+      `modkit/lib/build_overlay.py` (+ `retag_checksum.py`). ⚠ Only **one** overlay owns the static family, so two
+      overlay mods are mutually exclusive — combine their diffs into one overlay to stack them.
+- [~] `mod package` — builds the **zero-EA overlay diff** (only your declared overrides; a hard gate refuses any
+      undeclared/EA asset; sliced `inheritFrom` bases carry their `<Defines>` macro context; fsync +
+      integrity-verified — `docs/findings/0015`, `0007`). **Shareable deliverable (go-forward):** the strict zero-EA
+      diff **+ a bundled recipient-side assembler** that rebuilds the full overlay (per `0017`) from the recipient's
+      **own** `static_common_2`/`worldbuilder_2` — ships *nothing* EA-derived. A full ~6 MB **drop-in** is possible
+      but **LOCAL-ONLY** (carries EA-derived entry-list metadata), never presented as shareable. Design:
+      `docs/design/diff-plus-assemble-at-install.md`.
 - [x] `mod check` — pre-flight validation: **dangling references** and **unknown fields / schema errors** with
       `file:line` messages, plus per-type **schema drift** vs the target. Runs **automatically before a bake**
       (skip with `--no-check`), or on its own: `openwrath mod check <project>`. Dangling-ref severity is
