@@ -52,10 +52,21 @@ blind-spots doc.
 result: did it generalize or overfit? input-derived or output-derived? did it add a duplicate? For a value-diff,
 is it a StringHash (→ harvest) or source-drift (→ document and bucket, don't patch the compiler)?
 
+**"Byte-exact" is byte-exact on the comparator's *compared subset*.** `compare-stream.py` matches on
+(TypeId, InstanceId) and **wildcards TypeHash / InstanceHash** — so header-identity fields are *harvested-and-attested*,
+not oracle-verified. The engine *does* check TypeHash at load (0010/0016), so a wrong one is **byte-exact-green yet
+crash-in-game**. Harvest such fields from the shipped manifest (never the wrong-game scaffold — 0020's TW-vs-KW trap),
+and never let a green gate imply an uncompared field is right. (`docs/design/verification-blind-spots.md` §
+"the comparator's own blind spot".)
+
 ## Durable references — read these; do not rely on chat memory
 
-- `docs/design/verification-blind-spots.md` — oracle blind spots, test provenance, fresh-vs-shared-context.
-- `docs/findings/` — dated truths; **0012** (RefPack fix pending), **0013** (schema-edit remediation).
+- `docs/design/verification-blind-spots.md` — oracle blind spots (incl. **the comparator's own blind spot** and the
+  fresh-context reuse-duplication tax), test provenance, fresh-vs-shared-context.
+- `docs/findings/` — dated truths; **0012** (RefPack), **0013** (schema-edit remediation), **0014/0018/0019/0020**
+  (art pipeline — see SOLVED below), **0021** (texture/geometry mechanism recon).
+- `docs/design/community-mods-as-frontier-reference.md` — study community mods for *mechanism*, reimplement clean;
+  community ≠ ground truth. `docs/design/blender-integration.md` — authoring tier + the re-pack decidable gate.
 - `docs/reference/COVERAGE.md` — the per-type ground-truth matrix.
 - `ROADMAP.md` — go-forward plan + the input-integrity preflight.
 
@@ -76,3 +87,29 @@ a bundled recipient-side assembler; the drop-in carries EA-derived entry-list me
 0016's "must be complete data"/checksum-collision theories are **withdrawn** (see its banner); 0005 is **refined**
 (an overlay IS consulted, via the `.version` redirect). Only one overlay owns a family → overlay mods are mutually
 exclusive; stacking needs merging diffs into one overlay (planned `multi-mod merger`).
+
+## SOLVED: the W3D art pipeline + particles are byte-exact (findings 0014/0018/0019/0020 — do NOT re-derive)
+
+The whole **W3D model graph** (`W3DAnimation`, `W3DMesh`, `W3DContainer`, `W3DHierarchy`, `W3DCollisionBox`) **plus
+`FXParticleSystemTemplate`** round-trip **byte-exact vs shipped** `static_common` (sample-verified; see COVERAGE).
+Read the findings before touching art types. **The decision rule — do not presuppose the mesh/anim approach:** a
+type needs a **runtime pass-through** (emit the shipped compiled bytes verbatim, write them straight back — no
+re-encode) *only if it carries a lossy/typeless block* (anim's compressed channels; mesh's packed `VertexData`).
+**Plain structural types + particles use the ORDINARY pipeline** — register + hand-written/existing marshalers, the
+generic decompiler walk. Reaching for pass-through on a plain type is overfitting the previous answer (0019).
+
+**Reuse map (do NOT re-derive — invariant 3):** schema reach is added **in code**, never a BYO `.xsd` edit
+(`SchemaSet.BindRuntimeAnimationChannels` / `AugmentRuntimeMeshVertexData`, finding 0014); shared decompiler
+renderers live on `AssetInput` (`RenderUShortList`, `ReadBlobBase64`) — call them, don't copy; the **reference-choice**
+emit is general (`SchemaIndex.GetReferenceChoiceElement`/`IsReferenceChoiceType` + `StructReader.TryEmitReferenceChoice`);
+the **required-but-null polymorphic module** → empty-wrapper rule is schema-driven (`SchemaIndex.GetRequiredElementNames`,
+0020); `TypeId = FastHash(name)`, **TypeHash harvested from the shipped manifest** (never the TW scaffold — 0020).
+
+**Frontier — textures (0021, mechanism recon, NOT yet built):** new content enters as asset **records**
+(`Texture`/`OnDemandTexture`/`PackedTextureImage` + the model graph) referencing raw **D3D9 DDS**; `Texture` fields are
+`pipelineOnly` (compile-time re-encode) so the **pixel path is stated-tier, never byte-exact** (EA's DXT compressor
+isn't bit-reproducible). The records are tractable. Build order (oracle-strongest first): **loose-file
+`add-search-path` override** (the route the 4K pack rides — cheapest, no record modeling, in-game-acceptance gate) →
+**`PackedTextureImage`/`OnDemandTextureImage`** (plain data records → byte-exact) → **`Texture` shipped-payload
+pass-through** (open a shipped record first to confirm its layout) → new record-borne content last. Full plan + the
+community-mod discipline: `docs/findings/0021-*.md` + `docs/design/community-mods-as-frontier-reference.md`.
