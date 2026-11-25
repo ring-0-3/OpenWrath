@@ -193,7 +193,10 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     presents it as shareable. Also valid: `mod bake` into an existing complete stream (SI).
   - 📋 **multi-mod merger** — select N mods → bake their diffs into ONE overlay so all features run (one static
     stream owns a family, so overlay mods are otherwise mutually exclusive — 0017). Clash detection/resolution is
-    future work.
+    future work. **Motivating case (2026-11-25):** installing two separate `static_mod` overlays (a commando test +
+    a conyard-money mod) silently conflicts — only one owns the family — and had to be hand-merged into one project
+    (both `<GameObject>` overrides + the weapon) before `build-local`. The merger should do this automatically:
+    `openwrath mod merge <modA> <modB> … → one overlay`, with per-asset clash detection.
   - ✅ `mod check` — pre-flight validation: dangling references + unknown fields / schema errors with `file:line`,
     plus per-type schema drift vs the target. Runs **automatically before a bake** (`--no-check` to skip).
   - 📋 base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
