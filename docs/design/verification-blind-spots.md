@@ -83,6 +83,31 @@ assumption.
 
 ---
 
+## The comparator's own blind spot — "byte-exact" is byte-exact on the *compared subset*
+
+A subtlety that is easy to read past: the ground-truth gate does not compare *every* byte of an asset. `compare-stream.py`
+matches a recompiled asset to its shipped original by **(TypeId, InstanceId)** and **wildcards the header's TypeHash
+and InstanceHash**. Those fields are therefore **outside the compared bytes** — a wrong value in them is invisible to
+the oracle. "Byte-exact" from the gate means *byte-exact on the compared subset*, not *every byte the game loads*.
+
+This matters because **the engine checks some of what the comparator ignores.** TypeHash is validated at load — a
+mismatch is exactly the [0010](../findings/0010-insert-must-match-target-stream-type-schema-hash.md) /
+[0016](../findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md) class of **in-game crash**. So a
+registration with a wrong TypeHash can be **byte-exact-green and still crash on load.**
+
+- **Why the oracle misses it:** the field is wildcarded by the comparator; it is not in the compared bytes at all.
+- **In this repo:** every art-type registration sets a `TypeHash` (and a build-internal `ProcessingHash`) in
+  `Plugin.GetExtendedTypeInformation`. The W3DMesh row ([0018](../findings/0018-w3dmesh-byte-exact-via-runtime-vertexdata-passthrough.md))
+  even registered a TypeHash *different from the shipped manifest's* and stayed green, precisely because it is
+  uncompared; [0019](../findings/0019-w3dcontainer-hierarchy-collisionbox-byte-exact-plain-pipeline.md) harvested the
+  shipped values deliberately.
+- **Defence:** header-identity fields (TypeHash, and anything else the comparator wildcards) are **harvested from
+  shipped data and treated as harvested-not-oracle-verified** — the byte-exact gate is *not* evidence they are right;
+  the only gates on them are the in-stream TypeHash check and the in-game load. Never let "byte-exact" stand in for
+  "the game will load it." When a result's correctness depends on a wildcarded field, say so.
+
+---
+
 ## What "understand the codebase first" really means here
 
 It is not all-or-nothing. There are three levels of understanding, and only one is safe to skip:
@@ -112,6 +137,9 @@ For each change an agent lands, before trusting a green test:
    *don't* patch the compiler)?
 6. **No new duplicate.** Did this add a second implementation of something that already exists?
 7. **Coverage honest.** If it claims a type is "done," what was sampled — and what wasn't?
+8. **Does "byte-exact" mean every byte?** Or the comparator's *compared subset*? If the change's correctness
+   rests on a field the comparator wildcards (TypeHash / InstanceHash), the gate is not evidence it's right —
+   is it harvested from shipped data, and does the engine check it at load? (See "the comparator's own blind spot.")
 
 ---
 
@@ -278,6 +306,17 @@ A fresh subagent given *both* gets the best of both columns: the drift-resistanc
 coherence of shared context. The parent agent's real job is therefore to be a **context compiler** — distilling
 (1) and (2) into every spec — and the shared single-source-of-truth map (this repo's `CLAUDE.md` + the authority
 list) is what lets it supply (2) cheaply instead of hand-writing it each time.
+
+**Second confirmed occurrence — `W3DMesh`, 2026-11-25 (finding [0018](../findings/0018-w3dmesh-byte-exact-via-runtime-vertexdata-passthrough.md)).**
+The fresh W3DMesh pillar re-created a ushort-list renderer (`StructReader.RenderUShortList`) that was a verbatim
+copy of `W3DAnimationReader.RenderUShorts` — the *same* copied-renderer §3 drift, on the *same* kind of helper, one
+pillar later. The decisive detail: this rule is **already written down** (CLAUDE.md §3 names copied renderers as the
+root cause behind 0012). It recurred anyway. That is the evidence that the omission is not a *knowledge* gap the
+agent could have closed by reading more — it is a **reuse-map** gap in the spec: a fresh context cannot reuse an
+authority it was never pointed at, no matter how well the principle is documented. More documentation would not have
+prevented it; naming `AssetInput.RenderUShortList` (its eventual shared home) in the spec would have. Independent
+review caught it post-hoc; the spec should have caught it pre-hoc. Confirms the table above and sharpens the fix:
+the reuse map must list the *concrete symbols* to call, not just restate "don't duplicate."
 
 ---
 

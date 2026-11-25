@@ -66,6 +66,14 @@ This toolchain was built with **AI assistance**, stated plainly — and backed b
 so correctness is verified mechanically rather than taken on trust. Audits, scrutiny, and contributions are
 welcome. Full details in **[NOTICE.md](NOTICE.md)**.
 
+**Interoperability & third-party mods.** OpenWrath studies file *formats* to build compatible tooling — the
+reverse-engineering-for-interoperability that every format tool and emulator relies on. Where it learns from
+community work (texture add-ons, new-unit mods, FX patches), it takes the **mechanism**, verified independently,
+and reimplements it in its own code — **never** another project's content or bytes, which stay their authors'.
+OpenWrath ships **no EA and no third-party mod content**; you bring your own legally-owned game data and any mods
+you legally have. Mechanisms learned from community mods are credited. This is a description of the project's
+posture, not legal advice — respect the game's EULA and the licenses of any mods you work with.
+
 Command & Conquer and Kane's Wrath are trademarks of Electronic Arts Inc. OpenWrath is an independent,
 fan-made interoperability project — not affiliated with, endorsed by, or sponsored by EA. Game and engine
 names are used nominatively, only to describe what the tools interoperate with.

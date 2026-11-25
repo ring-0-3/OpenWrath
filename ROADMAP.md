@@ -192,17 +192,55 @@ anyone can *check*, not merely trust.
   `AnimationChannelTimecoded`/`Delta` types **in code** (`SchemaSet.BindRuntimeAnimationChannels`), never by
   editing a BYO schema file (finding 0014); §3 drift-seeds deduped (shared float-render, one channel-typeid
   source, one reader-dispatch helper).
-- 📋 **Schema-overlay registry** — the permanent home for in-code schema augmentations. The W3DAnimation runtime
-  binding above is the **prototype**; it is data-shaped (`(element, type)` table) precisely so it migrates into a
-  general registry of owned, declarative overlays (per-type, versioned) when a second one is needed, instead of
-  accreting ad-hoc augmentations in `SchemaSet`. (The owned-schema-file / `xs:redefine` variant is the documented
-  alternative to evaluate then.)
-- 📋 **Art — `W3DMesh`, then textures (DDS).** Mesh via the vertex pipeline; textures can't bit-reproduce EA's
-  compressor, so a **stated weaker tier**, never reported as byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
+- ✅ **Art — `W3DMesh` byte-exact vs shipped** (Pillar 2, second milestone). Decompile ↔ recompile via the W3X
+  compiler, with the packed `W3DMeshVertexData` (interleaved vertex buffer + D3D declaration + bone-remap table)
+  **passed through** in its shipped runtime form — a `<VertexData>` element the compiler writes straight back, no
+  re-packing (the `W3DMeshProcessor` packer is lossy; §4 tiered fidelity, done right — the mesh analogue of the
+  W3DAnimation pass-through). Verified from the pristine schema: seed-7 sample **300/300** byte-exact across plain,
+  skinned (bone-remap), and `AABTree` collision meshes; data types regression-clean (Armor 207/207, Weapon
+  456/456). Runtime vertex data bound in code (`SchemaSet.AugmentRuntimeMeshVertexData`), never by editing a BYO
+  schema (finding [0018](docs/findings/0018-w3dmesh-byte-exact-via-runtime-vertexdata-passthrough.md)); two latent
+  AABTree bugs fixed in passing (anon-inline scalar list, `**`-marshaler stack-address push).
+- 📋 **Schema-overlay registry** — the permanent home for in-code schema augmentations. There are now **two**
+  prototype bindings (W3DAnimation's runtime channels + W3DMesh's runtime `<VertexData>`), both data-shaped and
+  both currently accreting in `SchemaSet` — i.e. the "when a second one is needed" trigger has arrived. Migrate
+  them into a general registry of owned, declarative overlays (per-type, versioned). (The owned-schema-file /
+  `xs:redefine` variant is the documented alternative to evaluate then.)
+- ✅ **Art — `W3DContainer` (HLod) / `W3DHierarchy` / `W3DCollisionBox` byte-exact vs shipped** (Pillar 2, third
+  milestone). The connective tissue that binds meshes to a skeleton + LODs; plain sequential structs (no lossy
+  packed form), so handled by the **ordinary pipeline** — type registration + hand-written marshalers — with **no**
+  runtime pass-through and **no** in-code schema binding (deliberately not overfitting the mesh/animation answer).
+  The one refinement: `SubObject.RenderObject` is a schema `xas:refType` *choice* (`<Mesh>`/`<CollisionBox>`), so
+  the decompiler now picks the wrapper from the **referenced asset's actual type** via a schema-driven index (no
+  hardcoded element/type name). Verified against `static_common` seed-7 samples (150 each) all byte-exact; whole
+  corpus decompiles clean (finding
+  [0019](docs/findings/0019-w3dcontainer-hierarchy-collisionbox-byte-exact-plain-pipeline.md)). Closes the W3D
+  model graph.
+- 📋 **Art — textures (DDS).** Can't bit-reproduce EA's compressor, so a **stated weaker tier**, never reported as
+  byte-exact ([verification-blind-spots](docs/design/verification-blind-spots.md) §4).
 - 📋 **Maps** (greenfield `.map` reader + writer; 96 shipped maps as corpus) and **sound** (native EALayer3
   decode; faithful-not-identical re-encode) — later pillars, each its own dedicated run.
 - 📋 **Art / asset compilers** for new-content mods — the big build. Unlocks making *new* assets, not just editing
   existing ones; a separate effort from the data toolchain above.
+- 📋 **Blender integration** (viewer → importer → exporter). A Blender add-on that is a **thin front-end to the
+  OpenWrath CLI** — scene ⇄ W3X authoring XML — so format knowledge never forks into a plugin (§3 at ecosystem
+  scale). Needs the **authoring/semantic tier**, not just round-trip pass-through: a semantic vertex decode (the
+  base64 packed buffer is not editable geometry) plus `W3DHierarchy`→armature / `W3DContainer`→grouping (the next
+  art milestone feeds this directly). Gated on the **re-pack equality test** — `semantic-decode ∘ W3DMeshProcessor
+  == shipped bytes` — which keeps a *decidable* oracle on this frontier and validates the (currently unverified)
+  packer before any exporter is trusted; authored geometry is a **stated tier** ("loads + renders"), never claimed
+  byte-exact (§4). Ship the read-only viewer/importer first. Design:
+  **[docs/design/blender-integration.md](docs/design/blender-integration.md)**.
+- 📋 **Community mods as frontier existence-proofs** (research strategy). The KW community has shipped content
+  OpenWrath can't yet produce — 4K/HD **texture** add-ons, total-conversion mods with **new geometry**, and
+  **particle/FX** patches (e.g. reworked laser effects). Each proves the retail engine *accepts* a kind of non-EA
+  content; studying the **mechanism** (not their bytes) turns "frontier, no oracle" into "stated tier + in-game
+  acceptance gate." The corpus spans three tiers: particles (`FXParticleSystemTemplate` — likely a **data type →
+  byte-exact**, already scaffolded/commented in the XmlCompiler), new geometry (the mesh **re-pack** path), and
+  textures (true §4 frontier). **Discipline:** community mods are NOT ground truth (EA bytes / in-game remain the
+  oracle); BYO/zero-EA holds — characterize the format, reimplement clean, ship **nothing** of theirs; credit the
+  source. Each examined mod → a dated finding that promotes a type in COVERAGE. Design:
+  **[docs/design/community-mods-as-frontier-reference.md](docs/design/community-mods-as-frontier-reference.md)**.
 
 ## Packaging & docs
 - 📋 **Nix flake** + reproducible, cross-distro builds (bring-your-own game data; ship no game content).
