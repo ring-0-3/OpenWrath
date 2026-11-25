@@ -52,17 +52,42 @@ namespace BinaryAssetBuilder.Decompiler
         // Read a whole struct instance into `target` (attributes + child elements appended to it). This is one
         // XML element; AssetReference attributes collected during the walk (including inlined base chains) are
         // reordered by import index at the end.
-        public void ReadStruct(Type t, uint baseOff, XElement target)
+        public void ReadStruct(Type t, uint baseOff, XElement target) => ReadStruct(t, baseOff, target, null);
+
+        // `schemaName` is the authoring element name this struct is being emitted under (the field name the parent
+        // recursed through). It lets anonymous inline complexTypes — whose C# struct name (t.Name) is not a schema
+        // type — be resolved by the "@elem:<name>" fallback below. For named types t.Name resolves first, so the
+        // fallback never fires and behavior is unchanged.
+        public void ReadStruct(Type t, uint baseOff, XElement target, string schemaName)
         {
             var refs = new System.Collections.Generic.List<RefAttr>();
-            ReadStructInto(t, baseOff, target, refs);
+            ReadStructInto(t, baseOff, target, refs, schemaName);
             if (refs.Count > 1)
             {
                 foreach (RefAttr r in refs) r.Attribute.Remove();
                 foreach (RefAttr r in refs.OrderBy(r => r.Index)) target.Add(r.Attribute);
             }
-            ReorderChildElementsToSchema(t, target);
+            ReorderChildElementsToSchema(t, schemaName, target);
             EmitIdIfRequired(t, target);
+        }
+
+        // Declared CHILD-ELEMENT names, falling back to the "@elem:<schemaName>" key when the C# type name is not a
+        // named schema type (anonymous inline complexType, e.g. AABTree.TreePolyIndices). This fallback exists only
+        // to classify a scalar List<T> the XSD declares as a repeated child element (e.g. AABTree's <P>) — without
+        // it the walker emits that list as an attribute the validator rejects. It is deliberately NOT mirrored for
+        // attribute names or sequence order: element *names* are not globally unique (a few inline types share a
+        // name, e.g. two different "Upgrade"/"Heuristic" shapes), and first-wins on those keys would be wrong for
+        // attribute filtering (could drop a real attribute) or reordering. For anonymous types attrSet therefore
+        // stays null (SetAttr emits every field, as it did before this change — byte-safe since undeclared fields
+        // are at marshal-default) and no reorder is attempted (their struct order already matches the sequence).
+        private HashSet<string> DeclaredElems(Type t, string schemaName)
+        {
+            HashSet<string> byType = _schema?.GetDeclaredElementNames(t.Name);
+            if (byType != null || schemaName == null)
+            {
+                return byType;
+            }
+            return _schema?.GetDeclaredElementNames("@elem:" + schemaName);
         }
 
         // Nested structs that extend BaseAssetType (e.g. MicrophoneSettings inside AudioSettings) require the XSD
@@ -101,8 +126,10 @@ namespace BinaryAssetBuilder.Decompiler
         // the XSD sequence is exactly the order the original source XML had (and the order the compiler assigns
         // import indices in), this is byte-faithful: for types whose struct order already matches, it's a no-op.
         // Elements not named in the schema sequence keep their original slots.
-        private void ReorderChildElementsToSchema(Type t, XElement target)
+        private void ReorderChildElementsToSchema(Type t, string schemaName, XElement target)
         {
+            _ = schemaName; // reorder is keyed by named type only; anonymous inline types keep struct order (which
+                            // already matches their sequence), avoiding a first-wins misorder on shared element names.
             System.Collections.Generic.List<string> order = _schema?.GetOrderedElementNames(t.Name);
             if (order == null || order.Count == 0)
             {
@@ -142,7 +169,7 @@ namespace BinaryAssetBuilder.Decompiler
             }
         }
 
-        private void ReadStructInto(Type t, uint baseOff, XElement target, System.Collections.Generic.List<RefAttr> refs)
+        private void ReadStructInto(Type t, uint baseOff, XElement target, System.Collections.Generic.List<RefAttr> refs, string schemaName = null)
         {
             TypeLayout layout = TypeLayout.Get(t);
             if (layout.Fields == null)
@@ -153,16 +180,23 @@ namespace BinaryAssetBuilder.Decompiler
             // walk has desynced (foreign/mismatched schema) — bail to the raw fallback instead of reading garbage.
             _asset.CheckRange(baseOff, layout.SizeX86, "struct " + t.Name);
             // Attributes the XSD declares for this type (null => schema unavailable/unknown => emit unfiltered).
+            // Keyed by the C# type name only (no element-name fallback — see DeclaredElems for why).
             HashSet<string> attrSet = _schema?.GetDeclaredAttributeNames(t.Name);
             // Child-element names for this type (for fields the XSD expects as elements, not attributes).
             // Save/restore around the recursive walk so nested structs don't clobber the parent's set.
             HashSet<string> savedElems = _curElems;
-            _curElems = _schema?.GetDeclaredElementNames(t.Name);
+            string savedTypeName = _curTypeName;
+            _curElems = DeclaredElems(t, schemaName);
+            // The C# struct name, used to resolve a field's declared child-element schema type via the XSD
+            // (e.g. SubObject.RenderObject -> RenderObjectReference, a reference-choice). For the named types that
+            // carry reference-choice fields t.Name is the schema type name, so this resolves directly.
+            _curTypeName = t.Name;
             foreach (TypeLayout.FieldLayout f in layout.Fields)
             {
                 ReadField(f, baseOff + f.X86Off, target, attrSet, refs);
             }
             _curElems = savedElems;
+            _curTypeName = savedTypeName;
         }
 
         // Emit an attribute only if the schema declares it for the current type (or the schema is unavailable).
@@ -172,6 +206,10 @@ namespace BinaryAssetBuilder.Decompiler
         // XSD expects as a child element rather than an attribute is emitted as <name>value</name> instead of
         // being dropped by the attribute filter.
         private HashSet<string> _curElems;
+
+        // The C# struct name currently being walked (set by ReadStructInto). Lets an AssetReference field look up
+        // its declared child-element schema type to detect a reference-choice (SubObject.RenderObject).
+        private string _curTypeName;
 
         private void SetAttr(XElement target, HashSet<string> attrSet, string name, string value)
         {
@@ -207,6 +245,18 @@ namespace BinaryAssetBuilder.Decompiler
             //     re-stamps it from the module's element name on recompile. (ModuleData.id is emitted below.)
             if (fi.DeclaringType == typeof(SageBinaryData.ModuleData) && name == "TypeId")
             {
+                return;
+            }
+
+            // --- W3DMesh packed vertex data: the W3DMeshMarshalerHelper.VertexData field is a typeless `void*`
+            //     the generic walker can't follow (it would emit an empty <VertexData/> and lose every vertex).
+            //     In a shipped mesh it points at a packed W3DMeshVertexData (the compile-time output of
+            //     W3DMeshProcessor), which — like W3DAnimation's compressed channels — cannot be reproduced by
+            //     re-running the (lossy) packer. So we emit the packed block verbatim as a runtime <VertexData>
+            //     form; the compiler writes it straight back (Marshaler.W3DMeshRuntime), byte-exact. ---
+            if (fi.DeclaringType == typeof(SageBinaryData.W3DMeshMarshalerHelper) && name == "VertexData")
+            {
+                ReadRuntimeVertexData(off, target);
                 return;
             }
 
@@ -261,6 +311,10 @@ namespace BinaryAssetBuilder.Decompiler
                     if (name == "Base")
                     {
                         EmitReferenceAsText(target, off);
+                    }
+                    else if (TryEmitReferenceChoice(target, name, off))
+                    {
+                        // Emitted as a typed choice wrapper (e.g. <RenderObject><Mesh>name</Mesh></RenderObject>).
                     }
                     else
                     {
@@ -318,7 +372,7 @@ namespace BinaryAssetBuilder.Decompiler
                     // A distinct nested value struct (Color3f, Coord2D, RealRange, ...) is a child element
                     // whose sub-fields are its attributes.
                     var child = new XElement(_ns + name);
-                    ReadStruct(ft, off, child);
+                    ReadStruct(ft, off, child, name);
                     target.Add(child);
                 }
             }
@@ -390,7 +444,7 @@ namespace BinaryAssetBuilder.Decompiler
                 for (uint i = 0; i < count; i++)
                 {
                     var child = new XElement(_ns + name);
-                    ReadStruct(elem, itemsOff + i * stride, child);
+                    ReadStruct(elem, itemsOff + i * stride, child, name);
                     target.Add(child);
                 }
             }
@@ -492,7 +546,7 @@ namespace BinaryAssetBuilder.Decompiler
 
             // A pointer to a plain nested struct (BuildableStatus, Coord3D, Geometry, ...) -> child element.
             var child = new XElement(_ns + name);
-            ReadStruct(elem, to, child);
+            ReadStruct(elem, to, child, name);
             target.Add(child);
         }
 
@@ -544,7 +598,7 @@ namespace BinaryAssetBuilder.Decompiler
             }
             string elemName = _schema?.GetElementNameForType(moduleType.Name) ?? moduleType.Name;
             var child = new XElement(_ns + elemName);
-            ReadStruct(moduleType, itemOff, child);
+            ReadStruct(moduleType, itemOff, child, elemName);
             wrapper.Add(child);
             return true;
         }
@@ -562,6 +616,60 @@ namespace BinaryAssetBuilder.Decompiler
             Buffer.BlockCopy(_asset.Instance, (int)dataOff, bytes, 0, (int)size);
             SetAttr(target, attrSet, name, Convert.ToBase64String(bytes));
         }
+
+        // Emit the packed runtime W3DMeshVertexData the `void* VertexData` slot points at, as a <VertexData>
+        // element the compiler's W3DMesh runtime pass-through writes straight back (byte-exact). On-disk block
+        // (x86, 28 bytes), produced by W3DMeshProcessor.BuildVertexData:
+        //   @0  NumVertices (int)
+        //   @4  VertexElementData.Count  — the per-vertex STRIDE, not a byte count (BuildVertexData sets Count =
+        //       vertexDataSize); the interleaved buffer is NumVertices * stride bytes.
+        //   @8  VertexElementData.Items (ptr)
+        //   @12 VertexDeclaration.Count (bytes)   @16 VertexDeclaration.Items (ptr)
+        //   @20 Bones.Count (ushorts)             @24 Bones.Items (ptr)
+        // A null pointer (no relocation at `off`) = a mesh with no vertex data -> emit nothing; the compiler then
+        // reproduces the null VertexData (no <VertexData> and no authoring <Vertices>).
+        private void ReadRuntimeVertexData(uint off, XElement target)
+        {
+            if (!_asset.ReloFroms.Contains(off))
+            {
+                return; // null VertexData pointer
+            }
+            uint to = _asset.ReadSlot(off);
+            _asset.CheckRange(to, 28, "W3DMeshVertexData header");
+
+            uint numVertices = _asset.ReadSlot(to);
+            uint stride = _asset.ReadSlot(to + 4);
+            uint vedOff = _asset.ReadSlot(to + 8);
+            uint vdCount = _asset.ReadSlot(to + 12);
+            uint vdOff = _asset.ReadSlot(to + 16);
+            uint bonesCount = _asset.ReadSlot(to + 20);
+            uint bonesOff = _asset.ReadSlot(to + 24);
+
+            long vedBytes = (long)numVertices * stride; // the interleaved buffer length
+
+            var vd = new XElement(_ns + "VertexData");
+            vd.SetAttributeValue("NumVertices", numVertices.ToString(CultureInfo.InvariantCulture));
+            // The stride is carried explicitly (not derived as bytes/NumVertices) so a zero-vertex block still
+            // round-trips its VertexElementData.Count exactly.
+            vd.SetAttributeValue("VertexStride", stride.ToString(CultureInfo.InvariantCulture));
+            vd.Add(new XElement(_ns + "VertexElementData", ReadBlobBase64(vedOff, vedBytes, "W3DMesh VertexElementData")));
+            vd.Add(new XElement(_ns + "VertexDeclaration", ReadBlobBase64(vdOff, vdCount, "W3DMesh VertexDeclaration")));
+            vd.Add(new XElement(_ns + "Bones", _asset.RenderUShortList(bonesOff, bonesCount, "W3DMesh Bones")));
+            target.Add(vd);
+        }
+
+        private string ReadBlobBase64(uint off, long count, string what)
+        {
+            if (count <= 0)
+            {
+                return string.Empty;
+            }
+            _asset.CheckRange(off, count, what);
+            var bytes = new byte[count];
+            Buffer.BlockCopy(_asset.Instance, (int)off, bytes, 0, (int)count);
+            return Convert.ToBase64String(bytes);
+        }
+
 
         // ---- value rendering (inverse of the primitive Marshaler overloads) ------------------------------
 
@@ -809,6 +917,45 @@ namespace BinaryAssetBuilder.Decompiler
             {
                 refs.Add(new RefAttr(attr, index));
             }
+        }
+
+        // Some AssetReference fields are declared in the XSD not as a bare attribute/element but as a "reference
+        // choice": a child element whose type lists one wrapper element per allowed target type, each carrying an
+        // xas:refType (e.g. SubObject.RenderObject : RenderObjectReference =
+        // <choice><Mesh refType=W3DMesh/><CollisionBox refType=W3DCollisionBox/>). The on-disk import only records
+        // the referenced instance; the wrapper to emit is chosen from that instance's ACTUAL type (via the manifest
+        // References list + the type registry), then mapped to the choice element through the schema — never a
+        // hardcoded element/type name. Returns false (caller falls back to the plain attribute form) when the field
+        // is not a reference-choice or the wrapper can't be resolved, so non-choice references are unaffected.
+        private bool TryEmitReferenceChoice(XElement target, string name, uint slotOff)
+        {
+            string choiceType = _schema?.GetChildElementType(_curTypeName, name);
+            if (choiceType == null || !_schema.IsReferenceChoiceType(choiceType))
+            {
+                return false;
+            }
+            if (!_asset.ImportFroms.Contains(slotOff))
+            {
+                return true; // reference-choice field, but reference not set -> emit nothing (field omitted)
+            }
+            uint index = _asset.ReadSlot(slotOff);
+            string referentType = null;
+            if (index < (uint)_asset.References.Length)
+            {
+                (uint tid, uint _) = _asset.References[index];
+                if (_registry.TryGet(tid, out Type rt))
+                {
+                    referentType = rt.Name;
+                }
+            }
+            string wrapperElem = _schema.GetReferenceChoiceElement(choiceType, referentType);
+            if (wrapperElem == null)
+            {
+                return false; // unknown referent type -> fall back to the plain form (honest, harness will flag)
+            }
+            var wrapper = new XElement(_ns + name, new XElement(_ns + wrapperElem, RenderReferenceName(index)));
+            target.Add(wrapper);
+            return true;
         }
 
         // Emit an AssetReference as the element's TEXT content (the reference-wrapper pattern — see the "Base"

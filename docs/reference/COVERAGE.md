@@ -191,18 +191,65 @@ is earned by the current, BYO-clean pipeline — not by any edit to a bring-your
   `W3DAnimation` type; closed-loop `Armor.xml` **207/207** and `Weapon.xml` **456/456** byte-exact confirm the
   data types are unaffected.
 
-- **W3DMesh (stretch) — deferred.** Not attempted in this pass. The mesh pipeline packs authoring vertices into
-  a runtime `W3DMeshVertexData` layout via `W3DMeshProcessor`, so it needs its own (heavier) runtime
-  pass-through; left for a follow-up to avoid risking the verified `W3DAnimation` result.
+- **W3DMesh — byte-exact via a runtime VertexData pass-through (2026-11-25, finding
+  [0018](../findings/0018-w3dmesh-byte-exact-via-runtime-vertexdata-passthrough.md)).** A shipped `W3DMesh`
+  (TypeId `0xC2B1A262`) carries its vertex data in the **packed** `W3DMeshVertexData` form (interleaved vertex
+  buffer + D3D vertex declaration + bone-remap table) that `W3DMeshProcessor` builds from the authoring vertex
+  tags. That packer is lossy and order-sensitive, so — exactly as with `W3DAnimation` — the decompiler emits the
+  packed block **verbatim** as a runtime `<VertexData>` element and the W3X compiler writes it straight back, no
+  re-packing. The binding is in code (`SchemaSet.AugmentRuntimeMeshVertexData`), never editing the BYO schema.
+
+  - **Result.** `static_common`, **3420** `W3DMesh` instances, all decompiling cleanly (`ok=3420, raw=0`). A
+    reproducible random sample of **300** (seed 7) recompiles **300/300 BYTEEXACT** (`sizeok_valdiff=0,
+    sizediff=0`), covering plain meshes, skinned meshes (bone-remap tables), and collision meshes with `AABTree`s
+    (rocks / tiberium / trees). Measured with `tools/roundtrip.sh --from-binary` /
+    `compare-stream.py --type c2b1a262`. No regression: closed-loop `Armor.xml` **207/207**, `Weapon.xml`
+    **456/456**; ground-truth `W3DAnimation` still byte-exact; `schema-selftest` guards both bindings.
+  - **Two latent bugs fixed in passing** (never hit before, because no mesh had ever reached recompilation): the
+    decompiler emitted scalar lists inside *anonymous* inline complexTypes as attributes (AABTree `<P>` →
+    validation reject), and the `AABTree` `**`-marshalers pushed a stack address (`&objT`→`objT`) → NRE. See 0018.
+  - **Unmeasured:** only `static_common` is sampled; the big-endian / Xenon vertex path
+    (`W3DMeshProcessor` `NotImplementedException`) is untouched.
+  - **The packer itself (`W3DMeshProcessor.BuildVertexData`) is UNVERIFIED.** The byte-exact result above proves
+    only the **pass-through** (shipped packed bytes in → same bytes out); it does **not** exercise the authoring
+    path that re-packs semantic vertices into the runtime form. That packer has dead half-float paths, a
+    `// TODO` `CompressNormalizedDirection`, and the Xenon stub — none oracle-checked. Authoring *new* geometry
+    (and any Blender exporter) depends on it, and is gated on a future **re-pack equality test** —
+    `semantic-decode ∘ W3DMeshProcessor == shipped bytes` — which would validate it against shipped bytes. Until
+    that test exists, re-packing is a **frontier (§4), not a verified capability**
+    ([blender-integration](../design/blender-integration.md)).
+
+- **W3DContainer / W3DHierarchy / W3DCollisionBox — byte-exact via the ordinary pipeline (2026-11-25, finding
+  [0019](../findings/0019-w3dcontainer-hierarchy-collisionbox-byte-exact-plain-pipeline.md)).** The connective
+  tissue of the W3D model graph (HLod container → hierarchy skeleton + per-bone sub-objects; collision boxes).
+  Unlike mesh/animation these carry **no lossy/typeless block**, so they are handled by the **normal pipeline** —
+  type registration (`W3XCompiler/Plugin` + the owned `BinaryAssetBuilder.cfg`) + hand-written `Marshaler.W3D.cs`
+  overloads — with **no runtime pass-through and no in-code schema binding**. The one refinement:
+  `SubObject.RenderObject` is a schema `xas:refType` *choice* (`<Mesh>`/`<CollisionBox>`), so the decompiler picks
+  the wrapper from the **referenced asset's actual type** via a new schema-driven `SchemaIndex` index (no hardcoded
+  name). TypeId/TypeHash **harvested from the shipped `static_common` manifest**, not guessed.
+
+  | Type | TypeId | Stream | Whole-corpus decompile | Seed-7 sample |
+  |------|--------|--------|------------------------|---------------|
+  | W3DContainer    | `0xF0F08712` | static_common | 1060 ok, raw=0 | **150/150 BYTEEXACT** |
+  | W3DHierarchy    | `0x61D7EA40` | static_common |  940 ok, raw=0 | **150/150 BYTEEXACT** |
+  | W3DCollisionBox | `0xE3181C04` | static_common | 2701 ok, raw=0 | **150/150 BYTEEXACT** |
+
+  Measured with `tools/roundtrip.sh --from-binary` / `compare-stream.py --type`. Mixed reference-choice verified
+  byte-exact on `W3DContainer:ABBHIVEBLD_SKN` (both `<Mesh>` and `<CollisionBox>` sub-objects). No regression:
+  closed-loop `Armor.xml` **207/207**, `Weapon.xml` **456/456**; ground-truth `W3DAnimation` + `W3DMesh` still
+  byte-exact; `schema-selftest` both guards pass. **Unmeasured:** only `static_common` is sampled; the big-endian /
+  Xenon path is untouched; defensive-not-verified branches (empty `SubObject` list; a `RenderObject` referencing a
+  type other than W3DMesh/W3DCollisionBox) have no shipped instance to compare against.
 
 ## Not modeled (out of the 37)
 
 Types the decompiler encounters in shipped streams but the compiler does **not** register — e.g.
-`FXParticleSystemTemplate`, `Texture`, `W3DMesh`, `W3DContainer`, `W3DHierarchy`, `W3DCollisionBox`,
-`AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the UI/button/AI-strategy
-families. The decompiler labels these rather than crashing, but they cannot round-trip. The remaining art / W3D /
-texture / audio-file families belong to the planned **content pipeline**, not the data toolchain; see
-`../../ROADMAP.md`. (`W3DAnimation` has now left this list — see the art-pipeline section above.)
+`FXParticleSystemTemplate`, `Texture`, `AudioFile`, `PackedTextureImage`, `OnDemandTexture(Image)`, and the
+UI/button/AI-strategy families. The decompiler labels these rather than crashing, but they cannot round-trip. The
+remaining art / texture / audio-file families belong to the planned **content pipeline**, not the data toolchain;
+see `../../ROADMAP.md`. (`W3DAnimation`, `W3DMesh`, `W3DContainer`, `W3DHierarchy` and `W3DCollisionBox` have now
+left this list — see the art-pipeline section above.)
 
 ## Known decompiler (read-direction) limitations
 

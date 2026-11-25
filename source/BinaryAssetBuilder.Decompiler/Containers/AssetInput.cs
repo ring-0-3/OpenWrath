@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Text;
 
 namespace BinaryAssetBuilder.Decompiler.Containers
 {
@@ -111,6 +113,25 @@ namespace BinaryAssetBuilder.Decompiler.Containers
                 throw new DesyncException($"read@{offset} past instance end ({Instance.Length})");
             }
             return BitConverter.ToUInt32(Instance, (int)offset);
+        }
+
+        // Render a contiguous array of `count` little-endian uint16s at `offset` as a space-separated decimal list
+        // (range-checked). Shared single source for the readers' ushort-list rendering (W3DAnimation's
+        // FrameAndBinaryFlag, W3DMesh's Bones) so the spelling can't drift between them (invariant 3).
+        public string RenderUShortList(uint offset, uint count, string what)
+        {
+            if (count == 0)
+            {
+                return string.Empty;
+            }
+            CheckRange(offset, (long)count * 2, what);
+            var sb = new StringBuilder();
+            for (uint i = 0; i < count; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                sb.Append(BitConverter.ToUInt16(Instance, (int)(offset + i * 2)).ToString(CultureInfo.InvariantCulture));
+            }
+            return sb.ToString();
         }
 
         // Validate that [offset, offset+len) lies inside the instance; throw a labelled DesyncException if not.

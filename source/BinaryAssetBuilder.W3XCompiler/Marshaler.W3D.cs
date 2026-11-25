@@ -221,7 +221,7 @@ public static partial class Marshaler
         {
             return;
         }
-        using Tracker.Context context = state.Push((void**)&objT, (uint)sizeof(AABTree.TreeNode.NodeChild), 1u, typeof(AABTree.TreeNode.NodeChild));
+        using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(AABTree.TreeNode.NodeChild), 1u, typeof(AABTree.TreeNode.NodeChild));
         Marshal(node, *objT, state);
     }
 
@@ -241,7 +241,7 @@ public static partial class Marshaler
         {
             return;
         }
-        using Tracker.Context context = state.Push((void**)&objT, (uint)sizeof(AABTree.TreeNode.NodePoly), 1u, typeof(AABTree.TreeNode.NodePoly));
+        using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(AABTree.TreeNode.NodePoly), 1u, typeof(AABTree.TreeNode.NodePoly));
         Marshal(node, *objT, state);
     }
 
@@ -273,7 +273,7 @@ public static partial class Marshaler
         {
             return;
         }
-        using Tracker.Context context = state.Push((void**)&objT, (uint)sizeof(AABTree), 1u, typeof(AABTree));
+        using Tracker.Context context = state.Push((void**)objT, (uint)sizeof(AABTree), 1u, typeof(AABTree));
         Marshal(node, *objT, state);
     }
 
@@ -395,6 +395,20 @@ public static partial class Marshaler
         {
             return;
         }
+        // Runtime (decompiled) form: write the shipped packed vertex data straight through — no re-packing — so a
+        // decompiled W3DMesh reproduces its shipped bytes exactly (see Marshaler.W3DMeshRuntime). An absent
+        // <VertexData> here means the shipped mesh had a null VertexData pointer; leave objT->VertexData null.
+        if (IsRuntimeMesh(node))
+        {
+            Node vdNode = node.GetChildNode("VertexData", null);
+            if (vdNode is not null)
+            {
+                using Tracker.Context context = state.Push(&objT->VertexData, (uint)sizeof(W3DMeshVertexData), 1u, typeof(W3DMeshVertexData));
+                WriteRuntimeVertexData(vdNode, (W3DMeshVertexData*)objT->VertexData, state);
+            }
+            Marshal(node, (BaseRenderAssetType*)objT, state);
+            return;
+        }
         W3DMeshPipelineVertexData* pipelineData;
         using Tracker helperTracker = new Tracker((void**)&pipelineData, (uint)sizeof(W3DMeshPipelineVertexData), false, typeof(W3DMeshPipelineVertexData));
         Marshal(node.GetChildNodes(nameof(W3DMeshPipelineVertexData.Vertices)), &pipelineData->Vertices, helperTracker);
@@ -429,6 +443,97 @@ public static partial class Marshaler
         Marshal(node.GetChildNode(nameof(W3DMesh.FXShader), null), &objT->FXShader, state);
         Marshal(node.GetChildNode(nameof(W3DMesh.AABTree), null), &objT->AABTree, state);
         Marshal(node, (W3DMeshMarshalerHelper*)objT, state);
+    }
+
+    // ---- W3DContainer / W3DHierarchy / W3DCollisionBox (finding 0019) --------------------------------------
+    // Plain structural types: no lossy/typeless block, so these are ordinary field-by-field marshalers (the normal
+    // pipeline), not a runtime pass-through. Field order follows the struct layout, matching EA's marshal order so
+    // the appended variable-length data (strings) and the imports buffer are reproduced byte-exact.
+
+    // SubObject: BoneIndex (attr), SubObjectID (attr, inline AnsiString), RenderObject (a reference-choice element
+    // <RenderObject><Mesh|CollisionBox>name\idx</...></RenderObject>). The reference-resolution pass has already
+    // rewritten the inner element's text to "name\index"; an element node's value is the concatenation of its
+    // descendant text, so GetValue() on <RenderObject> yields that "name\index" directly — the AssetReference
+    // marshaler parses the index from it without this code needing to name the choice members.
+    public static unsafe void Marshal(Node node, SubObject* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetAttributeValue(nameof(SubObject.BoneIndex), null), &objT->BoneIndex, state);
+        Marshal(node.GetAttributeValue(nameof(SubObject.SubObjectID), string.Empty), &objT->SubObjectID, state);
+        Marshal(node.GetChildNode(nameof(SubObject.RenderObject), null), &objT->RenderObject, state);
+    }
+
+    public static unsafe void Marshal(Node node, W3DContainer* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetAttributeValue(nameof(W3DContainer.Hierarchy), null), &objT->Hierarchy, state);
+        Marshal(node.GetChildNodes(nameof(W3DContainer.SubObject)), &objT->SubObject, state);
+        Marshal(node, (BaseRenderAssetType*)objT, state);
+    }
+
+    public static unsafe void Marshal(Node node, W3DHierarchy.HierarchyPivot.Matrix* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M00), null), &objT->M00, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M10), null), &objT->M10, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M20), null), &objT->M20, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M30), null), &objT->M30, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M01), null), &objT->M01, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M11), null), &objT->M11, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M21), null), &objT->M21, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M31), null), &objT->M31, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M02), null), &objT->M02, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M12), null), &objT->M12, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M22), null), &objT->M22, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M32), null), &objT->M32, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M03), null), &objT->M03, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M13), null), &objT->M13, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M23), null), &objT->M23, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Matrix.M33), null), &objT->M33, state);
+    }
+
+    public static unsafe void Marshal(Node node, W3DHierarchy.HierarchyPivot* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Name), null), &objT->Name, state);
+        Marshal(node.GetAttributeValue(nameof(W3DHierarchy.HierarchyPivot.Parent), null), &objT->Parent, state);
+        Marshal(node.GetChildNode(nameof(W3DHierarchy.HierarchyPivot.Translation), null), &objT->Translation, state);
+        Marshal(node.GetChildNode(nameof(W3DHierarchy.HierarchyPivot.Rotation), null), &objT->Rotation, state);
+        Marshal(node.GetChildNode(nameof(W3DHierarchy.HierarchyPivot.FixupMatrix), null), &objT->FixupMatrix, state);
+    }
+
+    public static unsafe void Marshal(Node node, W3DHierarchy* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetChildNodes(nameof(W3DHierarchy.Pivot)), &objT->Pivot, state);
+        Marshal(node, (BaseAssetType*)objT, state);
+    }
+
+    public static unsafe void Marshal(Node node, W3DCollisionBox* objT, Tracker state)
+    {
+        if (node is null)
+        {
+            return;
+        }
+        Marshal(node.GetAttributeValue(nameof(W3DCollisionBox.JoypadPickingOnly), "false"), &objT->JoypadPickingOnly, state);
+        Marshal(node.GetChildNode(nameof(W3DCollisionBox.Center), null), &objT->Center, state);
+        Marshal(node.GetChildNode(nameof(W3DCollisionBox.Extent), null), &objT->Extent, state);
+        Marshal(node, (BaseRenderAssetType*)objT, state);
     }
 
     public static unsafe void Marshal(Node node, W3DAnimation.CompressionSetting* objT, Tracker state)

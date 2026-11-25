@@ -66,30 +66,49 @@ namespace BinaryAssetBuilder.SchemaSelfTest
             "<Timecoded Pivot='1'/><Delta Pivot='2'/>" +
             "</Channels></W3DAnimation>";
 
+        // Minimal schema mirroring the shape AugmentRuntimeMeshVertexData navigates: W3DMesh (complexContent
+        // extension) whose sequence has a REQUIRED authoring <Vertices> group and no element for the packed vertex
+        // data. Nothing here is EA content — a hand-written structural stand-in.
+        private const string MeshSchemaXsd = @"<?xml version='1.0'?>
+<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'
+           targetNamespace='uri:ea.com:eala:asset'
+           xmlns='uri:ea.com:eala:asset'
+           elementFormDefault='qualified'>
+  <xs:complexType name='BaseRenderAssetType'/>
+  <xs:complexType name='W3DMesh'>
+    <xs:complexContent>
+      <xs:extension base='BaseRenderAssetType'>
+        <xs:sequence>
+          <xs:element name='Vertices'>
+            <xs:complexType>
+              <xs:sequence><xs:element name='V' type='xs:string' maxOccurs='unbounded'/></xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name='W3DMesh' type='W3DMesh'/>
+</xs:schema>";
+
+        // A runtime-form mesh: a packed <VertexData> and NO authoring <Vertices>, which the authoring schema
+        // neither declares (VertexData) nor permits (Vertices is required).
+        private const string RuntimeMeshInstance =
+            "<W3DMesh xmlns='uri:ea.com:eala:asset'>" +
+            "<VertexData NumVertices='4' VertexStride='32'>" +
+            "<VertexElementData>AAAA</VertexElementData><VertexDeclaration>AAAA</VertexDeclaration><Bones></Bones>" +
+            "</VertexData></W3DMesh>";
+
         public static int Main()
         {
             try
             {
-                // Negative control: without augmentation the runtime channels MUST be rejected (else the test is
-                // vacuous and would never notice a broken augmentation).
-                List<string> before = Validate(Load(augment: false), RuntimeInstance);
-                if (before.Count == 0)
+                int rc = TestAnimation();
+                if (rc != 0)
                 {
-                    return Fail("negative control failed: the un-augmented schema accepted <Timecoded>/<Delta> — " +
-                                "the test is vacuous (check the synthetic schema still models only ChannelScalar/Quaternion).");
+                    return rc;
                 }
-
-                // Positive: with augmentation the same instance MUST validate clean (the channels are now bound).
-                List<string> after = Validate(Load(augment: true), RuntimeInstance);
-                if (after.Count != 0)
-                {
-                    return Fail("augmentation did not bind the runtime channels — <Timecoded>/<Delta> still rejected " +
-                                "under W3DAnimation/Channels:\n    " + string.Join("\n    ", after));
-                }
-
-                Console.WriteLine("schema-selftest: PASS — runtime W3DAnimation channels bind after augmentation " +
-                                  "(and are rejected without it).");
-                return 0;
+                return TestMesh();
             }
             catch (Exception ex)
             {
@@ -97,20 +116,88 @@ namespace BinaryAssetBuilder.SchemaSelfTest
             }
         }
 
-        private static XmlSchemaSet Load(bool augment)
+        private static int TestAnimation()
         {
-            XmlSchema schema;
-            using (var reader = XmlReader.Create(new StringReader(SchemaXsd)))
+            // Negative control: without augmentation the runtime channels MUST be rejected (else the test is
+            // vacuous and would never notice a broken augmentation).
+            List<string> before = Validate(LoadAnimation(augment: false), RuntimeInstance);
+            if (before.Count == 0)
             {
-                schema = XmlSchema.Read(reader, null);
+                return Fail("negative control failed: the un-augmented schema accepted <Timecoded>/<Delta> — " +
+                            "the test is vacuous (check the synthetic schema still models only ChannelScalar/Quaternion).");
             }
-            var set = new XmlSchemaSet();
-            set.Add(schema);
+
+            // Positive: with augmentation the same instance MUST validate clean (the channels are now bound).
+            List<string> after = Validate(LoadAnimation(augment: true), RuntimeInstance);
+            if (after.Count != 0)
+            {
+                return Fail("augmentation did not bind the runtime channels — <Timecoded>/<Delta> still rejected " +
+                            "under W3DAnimation/Channels:\n    " + string.Join("\n    ", after));
+            }
+
+            Console.WriteLine("schema-selftest: PASS — runtime W3DAnimation channels bind after augmentation " +
+                              "(and are rejected without it).");
+            return 0;
+        }
+
+        private static int TestMesh()
+        {
+            // NOTE (same caveat as TestAnimation): this guards the augmentation LOGIC against a synthetic schema
+            // shape, not the real KW schema. Both augmenters no-op when the live schema doesn't match the expected
+            // shape, so if EA's W3DMesh shape ever drifted this test would stay green while the real binding
+            // silently stopped firing — only the byte-exact round-trip (needs game data) catches that.
+            // Negative control: without augmentation the packed <VertexData> form MUST be rejected.
+            List<string> before = Validate(LoadMesh(augment: false), RuntimeMeshInstance);
+            if (before.Count == 0)
+            {
+                return Fail("negative control failed: the un-augmented mesh schema accepted the packed <VertexData> " +
+                            "form — the test is vacuous (check <Vertices> is still required and <VertexData> undeclared).");
+            }
+
+            // Positive: with augmentation the runtime mesh MUST validate clean.
+            List<string> after = Validate(LoadMesh(augment: true), RuntimeMeshInstance);
+            if (after.Count != 0)
+            {
+                return Fail("augmentation did not bind the runtime vertex data — the packed <VertexData> form is still " +
+                            "rejected under W3DMesh:\n    " + string.Join("\n    ", after));
+            }
+
+            Console.WriteLine("schema-selftest: PASS — runtime W3DMesh <VertexData> binds after augmentation " +
+                              "(and is rejected without it).");
+            return 0;
+        }
+
+        private static XmlSchemaSet LoadAnimation(bool augment)
+        {
+            XmlSchemaSet set = LoadSet(SchemaXsd);
             if (augment)
             {
                 SchemaSet.AugmentRuntimeAnimationChannels(set);
             }
             set.Compile();
+            return set;
+        }
+
+        private static XmlSchemaSet LoadMesh(bool augment)
+        {
+            XmlSchemaSet set = LoadSet(MeshSchemaXsd);
+            if (augment)
+            {
+                SchemaSet.AugmentRuntimeMeshVertexData(set);
+            }
+            set.Compile();
+            return set;
+        }
+
+        private static XmlSchemaSet LoadSet(string xsd)
+        {
+            XmlSchema schema;
+            using (var reader = XmlReader.Create(new StringReader(xsd)))
+            {
+                schema = XmlSchema.Read(reader, null);
+            }
+            var set = new XmlSchemaSet();
+            set.Add(schema);
             return set;
         }
 

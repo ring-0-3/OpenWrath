@@ -415,6 +415,87 @@ namespace BinaryAssetBuilder.Core.SageXml
             return null;
         }
 
+        // Prototype runtime-form binding for W3DMesh — the mesh analogue of BindRuntimeAnimationChannels (above).
+        // A shipped W3DMesh carries its vertex data in the PACKED (compile-time) form the game loads: an
+        // interleaved vertex buffer + D3D vertex declaration + bone-remap table, produced by W3DMeshProcessor and
+        // reached through the W3DMeshMarshalerHelper's typeless `VertexData` hook. EA's authoring schema only
+        // declares the SOURCE tags (<Vertices>/<Normals>/...) the packer consumes; there is no element for the
+        // packed output. The decompiler emits that packed block verbatim as a runtime <VertexData> element (the
+        // packer is lossy, so decompress->re-pack can't reproduce the shipped bytes — same reason as the runtime
+        // animation channels). We add, IN CODE before Compile(), an optional <VertexData> element at the front of
+        // the W3DMesh content sequence and relax <Vertices> to optional, so BOTH forms validate: authoring (has
+        // <Vertices>, no <VertexData>) and runtime (has <VertexData>, no <Vertices>). This never edits a
+        // bring-your-own schema file (CLAUDE.md invariant 1); it is the PROTOTYPE binding and migrates into the
+        // schema-overlay registry once that exists (ROADMAP). A no-op if the schema lacks W3DMesh or has an
+        // unexpected shape (e.g. the RA3/TW variants), and idempotent (never adds a second <VertexData>).
+        private void BindRuntimeMeshVertexData() => AugmentRuntimeMeshVertexData(Schemas);
+
+        // Core of the mesh binding, exposed static so the BCL-only schema self-test can guard it with no game data.
+        public static void AugmentRuntimeMeshVertexData(XmlSchemaSet schemas)
+        {
+            const string XsdNs = "http://www.w3.org/2001/XMLSchema";
+            foreach (XmlSchema schema in schemas.Schemas())
+            {
+                foreach (XmlSchemaObject item in schema.Items)
+                {
+                    if (item is not XmlSchemaComplexType { Name: "W3DMesh" } w3dMesh)
+                    {
+                        continue;
+                    }
+                    XmlSchemaSequence sequence = FindMeshSequence(w3dMesh);
+                    if (sequence is null)
+                    {
+                        return; // unexpected shape -> leave the schema exactly as EA shipped it
+                    }
+                    XmlSchemaElement vertices = null;
+                    foreach (XmlSchemaObject member in sequence.Items)
+                    {
+                        if (member is XmlSchemaElement { Name: "VertexData" })
+                        {
+                            return; // idempotent: already bound
+                        }
+                        if (member is XmlSchemaElement { Name: "Vertices" } v)
+                        {
+                            vertices = v;
+                        }
+                    }
+
+                    var stringName = new XmlQualifiedName("string", XsdNs);
+                    var uintName = new XmlQualifiedName("unsignedInt", XsdNs);
+                    var innerSeq = new XmlSchemaSequence();
+                    foreach (string child in new[] { "VertexElementData", "VertexDeclaration", "Bones" })
+                    {
+                        innerSeq.Items.Add(new XmlSchemaElement { Name = child, MinOccurs = 0, SchemaTypeName = stringName });
+                    }
+                    var vertexDataType = new XmlSchemaComplexType { Particle = innerSeq };
+                    vertexDataType.Attributes.Add(new XmlSchemaAttribute { Name = "NumVertices", SchemaTypeName = uintName });
+                    vertexDataType.Attributes.Add(new XmlSchemaAttribute { Name = "VertexStride", SchemaTypeName = uintName });
+                    var vertexData = new XmlSchemaElement { Name = "VertexData", MinOccurs = 0, SchemaType = vertexDataType };
+
+                    sequence.Items.Insert(0, vertexData);
+                    // Relax the authoring <Vertices> to optional so the runtime form (which omits it) validates.
+                    if (vertices is not null)
+                    {
+                        vertices.MinOccurs = 0;
+                    }
+
+                    schemas.Reprocess(schema);
+                    return;
+                }
+            }
+        }
+
+        // The xs:sequence inside the W3DMesh complexContent extension, or null if the type is not shaped as
+        // expected. Walks the uncompiled model, so it must run before Compile().
+        private static XmlSchemaSequence FindMeshSequence(XmlSchemaComplexType w3dMesh)
+        {
+            if ((w3dMesh.ContentModel as XmlSchemaComplexContent)?.Content is not XmlSchemaComplexContentExtension extension)
+            {
+                return null;
+            }
+            return extension.Particle as XmlSchemaSequence;
+        }
+
         private void LoadSchemas(bool countDependencies)
         {
             try
@@ -426,6 +507,7 @@ namespace BinaryAssetBuilder.Core.SageXml
                 throw new BinaryAssetBuilderException(ex, ErrorCode.ReadingSchema, "Error encountered in schema '{0}'", _currentSchema);
             }
             BindRuntimeAnimationChannels();
+            BindRuntimeMeshVertexData();
             Schemas.Compile();
             SetupHelperSchemaTypes();
             SortedDictionary<string, StringCollection> dictionary = new SortedDictionary<string, StringCollection>

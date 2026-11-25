@@ -75,6 +75,31 @@ namespace BinaryAssetBuilder.W3XCompiler
                     result.ProcessingHash = 1 ^ 0xC9D7E778u;
                     result.TypeHash = 0xC9D7E778u;
                     break;
+                // W3DContainer / W3DHierarchy / W3DCollisionBox: plain structural types (no lossy/typeless block),
+                // so the default ProcessInstance branch auto-dispatches HandleType<T> -> Marshaler.Marshal(Node,T*).
+                // TypeId and TypeHash are HARVESTED from the shipped static_common manifest (finding 0019), not
+                // guessed. TypeHash is wildcarded by the comparator (matched on TypeId+InstanceId) so it does not
+                // affect the verified bytes; it is set to the shipped value for honest fidelity. ProcessingHash is a
+                // build-internal value not present in shipped data and feeds only the (uncompared) InstanceHash, so
+                // it is set equal to TypeHash as a non-arbitrary placeholder — no magic relationship is implied.
+                case 0xF0F08712u:
+                    result.Type = typeof(W3DContainer);
+                    result.TypeName = nameof(W3DContainer);
+                    result.ProcessingHash = 0x909DD93Fu;
+                    result.TypeHash = 0x909DD93Fu;
+                    break;
+                case 0x61D7EA40u:
+                    result.Type = typeof(W3DHierarchy);
+                    result.TypeName = nameof(W3DHierarchy);
+                    result.ProcessingHash = 0x3BC26A7Au;
+                    result.TypeHash = 0x3BC26A7Au;
+                    break;
+                case 0xE3181C04u:
+                    result.Type = typeof(W3DCollisionBox);
+                    result.TypeName = nameof(W3DCollisionBox);
+                    result.ProcessingHash = 0xC917E725u;
+                    result.TypeHash = 0xC917E725u;
+                    break;
             }
             return result;
         }

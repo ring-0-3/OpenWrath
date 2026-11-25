@@ -28,6 +28,15 @@ namespace BinaryAssetBuilder.Decompiler
             public readonly List<string> OwnAttributes = new();
             public readonly List<string> AttributeGroupRefs = new();
             public readonly List<string> OwnElements = new();
+            // elemName -> its `type=` (named types only), for direct child elements of this type. Lets a field the
+            // XSD declares as a typed child element (e.g. SubObject.RenderObject : RenderObjectReference) be mapped
+            // from the field name to its schema type.
+            public readonly Dictionary<string, string> OwnElementTypes = new(StringComparer.Ordinal);
+            // refType (local name, e.g. "W3DMesh") -> the choice element that carries it (e.g. "Mesh"), for the
+            // direct child elements of this type that carry an xas:refType. This models a "reference choice" type
+            // (RenderObjectReference = <choice><Mesh refType=W3DMesh/><CollisionBox refType=W3DCollisionBox/>),
+            // so the decompiler can pick the wrapper element from the *referenced asset's actual type*.
+            public readonly Dictionary<string, string> RefTypeToElement = new(StringComparer.Ordinal);
             public string BaseType;
         }
 
@@ -80,6 +89,32 @@ namespace BinaryAssetBuilder.Decompiler
                 if (name != null)
                 {
                     _complexTypes[name] = ParseAttributeContainer(ct);
+                }
+            }
+            // Anonymous inline complexTypes — `<xs:element name="X"><xs:complexType>...` with no `type=` — have no
+            // schema-type name, so a lookup keyed by the C# struct name (e.g. AABTree.TreePolyIndices) finds
+            // nothing and the walker would misclassify its fields (emitting the scalar list <P> as an attribute).
+            // Index each under a synthetic "@elem:<elementName>" key so the walker can fall back to the element name
+            // (= the field name it recurses through) when the type name is unknown. First declaration wins; the
+            // KW schema's handful of duplicate inline element names are identical definitions (the W3DMesh vertex
+            // tags, kept "in sync" with W3DMeshPipelineVertexData) so first-wins is byte-safe. The "@elem:" prefix
+            // can never collide with a real (named) complexType key, so this is purely additive.
+            foreach (XElement el in schema.Descendants(Xs + "element"))
+            {
+                string elName = (string)el.Attribute("name");
+                if (elName == null || el.Attribute("type") != null)
+                {
+                    continue;
+                }
+                XElement inlineType = el.Element(Xs + "complexType");
+                if (inlineType == null)
+                {
+                    continue;
+                }
+                string key = "@elem:" + elName;
+                if (!_complexTypes.ContainsKey(key))
+                {
+                    _complexTypes[key] = ParseAttributeContainer(inlineType);
                 }
             }
             foreach (XElement ag in schema.Elements(Xs + "attributeGroup"))
@@ -154,6 +189,17 @@ namespace BinaryAssetBuilder.Decompiler
                     if (en != null && e.Ancestors(Xs + "complexType").FirstOrDefault() == root)
                     {
                         c.OwnElements.Add(en);
+                        string et = Local((string)e.Attribute("type"));
+                        if (et != null && !c.OwnElementTypes.ContainsKey(en))
+                        {
+                            c.OwnElementTypes[en] = et;
+                        }
+                        // xas:refType is namespaced; match by local name so we don't depend on the prefix spelling.
+                        string rt = Local(e.Attributes().FirstOrDefault(a => a.Name.LocalName == "refType")?.Value);
+                        if (rt != null && !c.RefTypeToElement.ContainsKey(rt))
+                        {
+                            c.RefTypeToElement[rt] = en;
+                        }
                     }
                 }
                 else if ((e.Name == Xs + "extension" || e.Name == Xs + "restriction") && c.BaseType == null)
@@ -321,6 +367,48 @@ namespace BinaryAssetBuilder.Decompiler
         public string GetElementNameForType(string typeName)
         {
             return typeName != null && _typeToElement.TryGetValue(typeName, out string el) ? el : null;
+        }
+
+        // The `type=` of a direct child element `elemName` of complex type `parentType` (resolving the extension
+        // base chain), or null. E.g. ("SubObject","RenderObject") -> "RenderObjectReference".
+        public string GetChildElementType(string parentType, string elemName)
+        {
+            if (!_available || parentType == null || elemName == null)
+            {
+                return null;
+            }
+            var visiting = new HashSet<string>(StringComparer.Ordinal);
+            string t = parentType;
+            while (t != null && visiting.Add(t) && _complexTypes.TryGetValue(t, out ComplexType ct))
+            {
+                if (ct.OwnElementTypes.TryGetValue(elemName, out string et))
+                {
+                    return et;
+                }
+                t = ct.BaseType;
+            }
+            return null;
+        }
+
+        // For a "reference choice" complex type (whose child elements each carry an xas:refType, e.g.
+        // RenderObjectReference), the wrapper element that references an asset of type `refType`, or null. E.g.
+        // ("RenderObjectReference","W3DMesh") -> "Mesh". Fully schema-driven: the wrapper is selected by the
+        // referenced asset's actual type, never a hardcoded name.
+        public string GetReferenceChoiceElement(string choiceType, string refType)
+        {
+            if (!_available || choiceType == null || refType == null)
+            {
+                return null;
+            }
+            return _complexTypes.TryGetValue(choiceType, out ComplexType ct)
+                && ct.RefTypeToElement.TryGetValue(refType, out string el) ? el : null;
+        }
+
+        // True if `typeName` is a reference-choice complex type (has at least one xas:refType child element).
+        public bool IsReferenceChoiceType(string typeName)
+        {
+            return _available && typeName != null
+                && _complexTypes.TryGetValue(typeName, out ComplexType ct) && ct.RefTypeToElement.Count > 0;
         }
 
         public bool Available => _available;

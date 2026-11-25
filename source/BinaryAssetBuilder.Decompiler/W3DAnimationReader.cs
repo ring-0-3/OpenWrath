@@ -105,7 +105,7 @@ namespace BinaryAssetBuilder.Decompiler
                 uint fabOff = _asset.ReadSlot(off + 24);
                 uint valCount = _asset.ReadSlot(off + 28);
                 uint valOff = _asset.ReadSlot(off + 32);
-                ch.Add(new XElement(_ns + "FrameAndBinaryFlag", RenderUShorts(fabOff, fabCount)));
+                ch.Add(new XElement(_ns + "FrameAndBinaryFlag", _asset.RenderUShortList(fabOff, fabCount, "anim ushort list")));
                 ch.Add(new XElement(_ns + "Values", RenderFloats(valOff, valCount)));
             }
             else
@@ -146,22 +146,6 @@ namespace BinaryAssetBuilder.Decompiler
                 }
             }
             return "0x" + index.ToString("x8", CultureInfo.InvariantCulture);
-        }
-
-        private string RenderUShorts(uint off, uint count)
-        {
-            if (count == 0)
-            {
-                return string.Empty;
-            }
-            _asset.CheckRange(off, (long)count * 2, "anim ushort list");
-            var sb = new StringBuilder();
-            for (uint i = 0; i < count; i++)
-            {
-                if (i > 0) sb.Append(' ');
-                sb.Append(BitConverter.ToUInt16(_asset.Instance, (int)(off + i * 2)).ToString(CultureInfo.InvariantCulture));
-            }
-            return sb.ToString();
         }
 
         private string RenderFloats(uint off, uint count)
