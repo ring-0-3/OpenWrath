@@ -64,7 +64,8 @@ and never let a green gate imply an uncompared field is right. (`docs/design/ver
 - `docs/design/verification-blind-spots.md` — oracle blind spots (incl. **the comparator's own blind spot** and the
   fresh-context reuse-duplication tax), test provenance, fresh-vs-shared-context.
 - `docs/findings/` — dated truths; **0012** (RefPack), **0013** (schema-edit remediation), **0014/0018/0019/0020**
-  (art pipeline — see SOLVED below), **0021** (texture/geometry mechanism recon).
+  (art pipeline — see SOLVED below), **0021** (texture/geometry mechanism recon), **0022** (texture UI-atlas records
+  byte-exact), **0023** (shipped `Texture` record = literal DDS blob — recon that specs the pass-through).
 - `docs/design/community-mods-as-frontier-reference.md` — study community mods for *mechanism*, reimplement clean;
   community ≠ ground truth. `docs/design/blender-integration.md` — authoring tier + the re-pack decidable gate.
 - `docs/reference/COVERAGE.md` — the per-type ground-truth matrix.
@@ -105,11 +106,13 @@ emit is general (`SchemaIndex.GetReferenceChoiceElement`/`IsReferenceChoiceType`
 the **required-but-null polymorphic module** → empty-wrapper rule is schema-driven (`SchemaIndex.GetRequiredElementNames`,
 0020); `TypeId = FastHash(name)`, **TypeHash harvested from the shipped manifest** (never the TW scaffold — 0020).
 
-**Frontier — textures (0021, mechanism recon, NOT yet built):** new content enters as asset **records**
-(`Texture`/`OnDemandTexture`/`PackedTextureImage` + the model graph) referencing raw **D3D9 DDS**; `Texture` fields are
-`pipelineOnly` (compile-time re-encode) so the **pixel path is stated-tier, never byte-exact** (EA's DXT compressor
-isn't bit-reproducible). The records are tractable. Build order (oracle-strongest first): **loose-file
-`add-search-path` override** (the route the 4K pack rides — cheapest, no record modeling, in-game-acceptance gate) →
-**`PackedTextureImage`/`OnDemandTextureImage`** (plain data records → byte-exact) → **`Texture` shipped-payload
-pass-through** (open a shipped record first to confirm its layout) → new record-borne content last. Full plan + the
-community-mod discipline: `docs/findings/0021-*.md` + `docs/design/community-mods-as-frontier-reference.md`.
+**Textures — in progress (mechanism recon 0021; records byte-exact 0022; `Texture` record mapped 0023):**
+`PackedTextureImage`/`OnDemandTextureImage` (UI-atlas records) are **byte-exact** (0022, plain registration). The
+shipped **`Texture`** record is byte-inspected (0023): a 12-byte header (`Flags=0`, `ptr=12`, `payloadLen`) + a
+**literal complete D3D9 DDS** (one `04000000 ffffffff` relo); `OnDemandTexture` is an **8-byte all-zero** lazy
+placeholder. So the **pixel payload passes through byte-exact for *shipped* textures** (the 0018/W3DMesh pattern — no
+DXT re-encode); only **authoring *new* textures is stated-tier** (`Texture` fields are `pipelineOnly`; EA's DXT
+compressor isn't bit-reproducible). Build order: **`Texture`/`OnDemandTexture` shipped-payload pass-through** (next
+oracle-strong win, specced in 0023) → **loose-file `add-search-path` override** (the route the 4K pack rides —
+cheapest *visible* in-game capability, stated-tier, in-game-acceptance gate) → new record-borne content last. Full
+plan + community-mod discipline: `docs/findings/0021-*.md`/`0023-*.md` + `docs/design/community-mods-as-frontier-reference.md`.
