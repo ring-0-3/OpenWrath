@@ -195,6 +195,19 @@ public class Plugin : IAssetBuilderPlugin
             // (finding 0016's version-blindness class; 0020's TW-vs-KW trap).
             (typeof(PackedTextureImage), 0x8AA0FF90u, false),
             (typeof(OnDemandTextureImage), 0xFBBF792Du, false),
+            // Texture content-pipeline records (findings 0023/0024). Unlike the 0022 UI-atlas records above, these
+            // are runtime PASS-THROUGH types: a shipped Texture wraps a literal D3D9 DDS payload (DataBlob) emitted
+            // and written back VERBATIM (no DXT re-encode — the 0018 W3DMesh pattern; Marshaler.Texture +
+            // StructReader.ReadTexturePayload + SchemaSet.AugmentRuntimeTexturePayload), and OnDemandTexture is an
+            // 8-byte all-zero lazy placeholder. TypeHashes HARVESTED from the shipped KW static_common manifest:
+            // 0xB30F14DB on all 1575 Texture instances, 0x9DEE5EDC on all 123 OnDemandTexture instances (single
+            // distinct value each). Neither type appears in the commented TW GetExtendedTypeInformation scaffold
+            // below, so there is no shortcut value — harvest is the only source (invariant 2; the comparator
+            // wildcards TypeHash so a byte-exact gate won't catch a wrong one, but the engine checks it at load,
+            // 0010/0016). TypeId = FastHash(name) = 0x21E727DA / 0x9312B9AC. ProcessingHash = num ^ TypeHash is
+            // applied by CreateTypeInfo — not hardcoded.
+            (typeof(Texture), 0xB30F14DBu, false),
+            (typeof(OnDemandTexture), 0x9DEE5EDCu, false),
         })
         {
             CreateTypeInfo(type, num, hash, hasCustomData);

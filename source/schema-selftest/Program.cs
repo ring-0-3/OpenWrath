@@ -99,6 +99,32 @@ namespace BinaryAssetBuilder.SchemaSelfTest
             "<VertexElementData>AAAA</VertexElementData><VertexDeclaration>AAAA</VertexDeclaration><Bones></Bones>" +
             "</VertexData></W3DMesh>";
 
+        // Minimal schema mirroring the shape AugmentRuntimeTexturePayload navigates: Texture (complexContent
+        // extension) whose content sequence is EMPTY and whose fields are pipelineOnly directives (here just a File
+        // attribute), with no element for the packed DDS payload. Nothing here is EA content — a hand-written
+        // structural stand-in.
+        private const string TextureSchemaXsd = @"<?xml version='1.0'?>
+<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'
+           targetNamespace='uri:ea.com:eala:asset'
+           xmlns='uri:ea.com:eala:asset'
+           elementFormDefault='qualified'>
+  <xs:complexType name='BaseAssetType'/>
+  <xs:complexType name='Texture'>
+    <xs:complexContent>
+      <xs:extension base='BaseAssetType'>
+        <xs:sequence/>
+        <xs:attribute name='File' type='xs:string'/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name='Texture' type='Texture'/>
+</xs:schema>";
+
+        // A runtime-form texture: a pass-through <Payload> (base64 DDS) and no authoring attributes, which the
+        // authoring schema's empty sequence does not permit.
+        private const string RuntimeTextureInstance =
+            "<Texture xmlns='uri:ea.com:eala:asset'><Payload>AAAA</Payload></Texture>";
+
         public static int Main()
         {
             try
@@ -108,7 +134,12 @@ namespace BinaryAssetBuilder.SchemaSelfTest
                 {
                     return rc;
                 }
-                return TestMesh();
+                rc = TestMesh();
+                if (rc != 0)
+                {
+                    return rc;
+                }
+                return TestTexture();
             }
             catch (Exception ex)
             {
@@ -165,6 +196,43 @@ namespace BinaryAssetBuilder.SchemaSelfTest
             Console.WriteLine("schema-selftest: PASS — runtime W3DMesh <VertexData> binds after augmentation " +
                               "(and is rejected without it).");
             return 0;
+        }
+
+        private static int TestTexture()
+        {
+            // NOTE (same caveat as TestMesh): guards the augmentation LOGIC against a synthetic schema shape, not the
+            // real KW schema; the augmenter no-ops when the live schema doesn't match, so a shape drift would keep
+            // this green while the real binding silently stopped firing — only the byte-exact round-trip catches that.
+            // Negative control: without augmentation the pass-through <Payload> MUST be rejected (empty sequence).
+            List<string> before = Validate(LoadTexture(augment: false), RuntimeTextureInstance);
+            if (before.Count == 0)
+            {
+                return Fail("negative control failed: the un-augmented texture schema accepted the pass-through " +
+                            "<Payload> form — the test is vacuous (check the Texture content sequence is still empty).");
+            }
+
+            // Positive: with augmentation the runtime texture MUST validate clean.
+            List<string> after = Validate(LoadTexture(augment: true), RuntimeTextureInstance);
+            if (after.Count != 0)
+            {
+                return Fail("augmentation did not bind the runtime texture payload — the pass-through <Payload> form " +
+                            "is still rejected under Texture:\n    " + string.Join("\n    ", after));
+            }
+
+            Console.WriteLine("schema-selftest: PASS — runtime Texture <Payload> binds after augmentation " +
+                              "(and is rejected without it).");
+            return 0;
+        }
+
+        private static XmlSchemaSet LoadTexture(bool augment)
+        {
+            XmlSchemaSet set = LoadSet(TextureSchemaXsd);
+            if (augment)
+            {
+                SchemaSet.AugmentRuntimeTexturePayload(set);
+            }
+            set.Compile();
+            return set;
         }
 
         private static XmlSchemaSet LoadAnimation(bool augment)

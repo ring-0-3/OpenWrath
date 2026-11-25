@@ -496,6 +496,67 @@ namespace BinaryAssetBuilder.Core.SageXml
             return extension.Particle as XmlSchemaSequence;
         }
 
+        // Prototype runtime-form binding for the Texture record — the texture analogue of AugmentRuntimeMeshVertexData
+        // (findings 0023/0024). A shipped Texture carries its pixels as a literal D3D9 DDS payload (the compile-time
+        // output of EA's DXT compressor + mip generator, which is lossy and not bit-reproducible). EA's authoring
+        // AssetTypeTexture.xsd declares only pipelineOnly directives (File/OutputFormat/GenerateMipMaps/...) — the
+        // compile-time inputs to that packer — and an EMPTY content sequence; there is no element for the packed
+        // output. The decompiler emits that payload verbatim as a runtime <Payload> base64 element (the packer is
+        // lossy, so decode->re-encode can't reproduce the shipped bytes — same reason as the runtime mesh/animation
+        // blocks). We add, IN CODE before Compile(), an optional <Payload> element to the Texture content sequence so
+        // BOTH forms validate: authoring (no <Payload>) and runtime pass-through (has <Payload>). This never edits a
+        // bring-your-own schema file (CLAUDE.md invariant 1); it is the PROTOTYPE binding and migrates into the
+        // schema-overlay registry once that exists (ROADMAP). A no-op if the schema lacks Texture or has an
+        // unexpected shape (e.g. the RA3/TW variants), and idempotent (never adds a second <Payload>).
+        private void BindRuntimeTexturePayload() => AugmentRuntimeTexturePayload(Schemas);
+
+        // Core of the texture binding, exposed static so the BCL-only schema self-test can guard it with no game data.
+        public static void AugmentRuntimeTexturePayload(XmlSchemaSet schemas)
+        {
+            const string XsdNs = "http://www.w3.org/2001/XMLSchema";
+            foreach (XmlSchema schema in schemas.Schemas())
+            {
+                foreach (XmlSchemaObject item in schema.Items)
+                {
+                    if (item is not XmlSchemaComplexType { Name: "Texture" } texture)
+                    {
+                        continue;
+                    }
+                    XmlSchemaSequence sequence = FindTextureSequence(texture);
+                    if (sequence is null)
+                    {
+                        return; // unexpected shape -> leave the schema exactly as EA shipped it
+                    }
+                    foreach (XmlSchemaObject member in sequence.Items)
+                    {
+                        if (member is XmlSchemaElement { Name: "Payload" })
+                        {
+                            return; // idempotent: already bound
+                        }
+                    }
+                    sequence.Items.Add(new XmlSchemaElement
+                    {
+                        Name = "Payload",
+                        MinOccurs = 0,
+                        SchemaTypeName = new XmlQualifiedName("string", XsdNs),
+                    });
+                    schemas.Reprocess(schema);
+                    return;
+                }
+            }
+        }
+
+        // The xs:sequence inside the Texture complexContent extension, or null if the type is not shaped as
+        // expected. Walks the uncompiled model, so it must run before Compile().
+        private static XmlSchemaSequence FindTextureSequence(XmlSchemaComplexType texture)
+        {
+            if ((texture.ContentModel as XmlSchemaComplexContent)?.Content is not XmlSchemaComplexContentExtension extension)
+            {
+                return null;
+            }
+            return extension.Particle as XmlSchemaSequence;
+        }
+
         private void LoadSchemas(bool countDependencies)
         {
             try
@@ -508,6 +569,7 @@ namespace BinaryAssetBuilder.Core.SageXml
             }
             BindRuntimeAnimationChannels();
             BindRuntimeMeshVertexData();
+            BindRuntimeTexturePayload();
             Schemas.Compile();
             SetupHelperSchemaTypes();
             SortedDictionary<string, StringCollection> dictionary = new SortedDictionary<string, StringCollection>

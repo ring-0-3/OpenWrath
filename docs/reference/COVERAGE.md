@@ -28,29 +28,33 @@ Two senses of "correct" are kept distinct, because conflating them would overcla
 
 ## What is registered
 
-The compiler registers **40 asset types** (the `foreach` in
-`source/BinaryAssetBuilder.XmlCompiler/BinaryAssetBuilder/XmlCompiler/Plugin.cs`, `Initialize()`). Those 40 are
+The compiler registers **42 asset types** (the `foreach` in
+`source/BinaryAssetBuilder.XmlCompiler/BinaryAssetBuilder/XmlCompiler/Plugin.cs`, `Initialize()`). Those 42 are
 the authoritative supported set (`FXParticleSystemTemplate` joined 2026-11-25; `PackedTextureImage` and
 `OnDemandTextureImage` — the first texture-pillar types — joined 2026-11-25, see below and finding
-[0022](../findings/0022-packedtextureimage-ondemandtextureimage-byte-exact.md)). The decompiler can additionally
+[0022](../findings/0022-packedtextureimage-ondemandtextureimage-byte-exact.md); `Texture` and `OnDemandTexture` —
+the texture *records* themselves, via a shipped-DDS-payload pass-through — joined 2026-11-25, see below and finding
+[0024](../findings/0024-texture-ondemandtexture-byte-exact-shipped-payload-passthrough.md)). The decompiler can additionally
 *name* and structurally walk more types than that for inspection (it labels anything it can't fully model as
 `<RawAsset>`/`<UnknownModule>` rather than crashing), but only the types below have full compile support, so only
 they can round-trip.
 
 ## Status by type (sample-verified against shipped bytes)
 
-Headline: **of 40 registered types, 37 reproduce EA's shipped bytes byte-exact on the sampled instances**
+Headline: **of 42 registered types, 39 reproduce EA's shipped bytes byte-exact on the sampled instances**
 (MultiplayerColor joined this set 2026-11-24; FXParticleSystemTemplate — the first content-pipeline *data* type —
 2026-11-25, see the art/content-pipeline section and finding
 [0020](../findings/0020-fxparticlesystemtemplate-byte-exact-plain-pipeline-plus-required-empty-module.md);
 PackedTextureImage / OnDemandTextureImage — the first texture-pillar types — 2026-11-25, finding
-[0022](../findings/0022-packedtextureimage-ondemandtextureimage-byte-exact.md)),
+[0022](../findings/0022-packedtextureimage-ondemandtextureimage-byte-exact.md); `Texture` / `OnDemandTexture` — the
+texture *records*, via a shipped-DDS-payload pass-through — 2026-11-25, finding
+[0024](../findings/0024-texture-ondemandtexture-byte-exact-shipped-payload-passthrough.md)),
 and **GameObject is now mostly byte-exact too**
 (**40/50 = 80%** of a *widened* random sample) after closing its dominant draw-module value-diff; Environment is
 structurally exact with a single residual value-diff that is a known-lossy reference (characterized below); 1 has
 no instances in the sampled streams to measure here (Road). There is no longer a `RECOMPILE-MISSING` type.
 
-### Byte-exact vs EA shipped bytes — sample-verified (37)
+### Byte-exact vs EA shipped bytes — sample-verified (39)
 
 Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXACT`.
 
@@ -93,6 +97,8 @@ Each was confirmed with `--from-binary … --only <instance>` returning `BYTEEXA
 | FXParticleSystemTemplate | static_common | seed-7 sample **150/150** + all 35 required-null-module systems (RedeemerLaserGlow3 …); whole corpus 1674 decompile ok, raw=0 |
 | PackedTextureImage | static_common | **whole stream 870/870** BYTEEXACT (not a sample); decompile ok, raw=0 |
 | OnDemandTextureImage | static_common | **whole stream 123/123** BYTEEXACT (not a sample); decompile ok, raw=0 |
+| Texture | static_common | **whole stream 1575/1575** BYTEEXACT (not a sample); decompile ok, raw=0 — shipped-DDS-payload pass-through (finding 0024) |
+| OnDemandTexture | static_common | **whole stream 123/123** BYTEEXACT (not a sample); decompile ok, raw=0 — 8-byte lazy placeholder (finding 0024) |
 
 > "Sample-verified" means specific instances were confirmed byte-exact against shipped bytes — not that every
 > instance of the type is proven. It is strong positive evidence for the type's model, not a whole-corpus
@@ -291,19 +297,47 @@ is earned by the current, BYO-clean pipeline — not by any edit to a bring-your
   No regression (Armor 207/207, Weapon 456/456, W3DAnimation/W3DMesh/FXParticle byte-exact, schema-selftest PASS).
   **Unmeasured:** only `static_common`; TypeHash harvested-not-oracle-verified (comparator wildcard); big-endian /
   Xenon untouched. The **`Texture` / `OnDemandTexture` records themselves** (DDS payload / lazy placeholder) are
-  characterized in finding [0023](../findings/0023-texture-ondemandtexture-record-layout-recon.md) (Recon) but not
-  yet modeled — the next milestone (shipped-payload pass-through).
+  byte-exact via a shipped-payload pass-through — see the next bullet and finding 0024.
 
-## Not modeled (out of the 40)
+- **Textures (the records) — `Texture` / `OnDemandTexture` byte-exact via a shipped-DDS-payload pass-through
+  (2026-11-25, finding
+  [0024](../findings/0024-texture-ondemandtexture-byte-exact-shipped-payload-passthrough.md)).** The texture-pillar
+  milestone 2 (0021 build order), following the 0023 recon. A shipped `Texture` carries its pixels as a **literal,
+  complete D3D9 DDS file** (the compile-time output of EA's DXT compressor + mip generator, which is lossy and not
+  bit-reproducible), so — exactly like W3DMesh's packed vertex data (finding 0018) — the decompiler emits the shipped
+  DDS bytes **verbatim** as a runtime `<Payload>` base64 element and the compiler writes them straight back into the
+  record's `DataBlob`, **no DXT re-encode**. This gives byte-exact for **shipped** textures without reimplementing
+  the compressor; authoring *new* textures stays stated-tier (out of scope). `OnDemandTexture` is the lazy twin: an
+  **8-byte all-zero** placeholder (null payload pointer, streamed on demand) that marshals to nothing but the Base
+  slot. The model is `Texture = { BaseAssetType Base; DataBlob Payload }` (Base@0, `Payload.Data`@4 relocated,
+  `Payload.Size`@8, DDS@0x0C — the recon's "Flags@0x00" is the universal Base placeholder, not a separate field) and
+  `OnDemandTexture = { BaseAssetType Base; byte* Payload(null) }`.
+
+  | Type | TypeId | TypeHash (shipped, harvested) | Stream | Result |
+  |------|--------|-------------------------------|--------|--------|
+  | Texture         | `0x21E727DA` | `0xB30F14DB` | static_common | whole stream **1575/1575 BYTEEXACT** (decompile ok, raw=0) |
+  | OnDemandTexture | `0x9312B9AC` | `0x9DEE5EDC` | static_common | whole stream **123/123 BYTEEXACT** (decompile ok, raw=0) |
+
+  Zero value-diffs; single distinct TypeHash each (no schema variants). ⚠ TypeHashes **harvested from the shipped KW
+  manifest** (neither type appears in the commented TW scaffold — no shortcut value; the comparator wildcards
+  TypeHash, so these are harvested-not-oracle-verified; the engine checks TypeHash at load, 0010/0016). The schema
+  reach (`<Payload>` under `Texture`) is added **in code** (`SchemaSet.AugmentRuntimeTexturePayload`, guarded by the
+  `schema-selftest` with a negative control), never a `.xsd` edit. No regression (Armor 207/207, Weapon 456/456,
+  W3DAnimation/W3DMesh/FXParticle/PackedTextureImage/OnDemandTextureImage byte-exact, schema-selftest 3/3 PASS).
+  **Unmeasured:** only `static_common`; big-endian / Xenon untouched. **Defensive-not-verified:** a non-empty/null
+  `Texture` payload branch has no shipped instance (every shipped Texture carries a DDS); authoring *new* textures
+  (the DXT re-encoder) is a future stated-tier phase, not exercised here.
+
+## Not modeled (out of the 42)
 
 Types the decompiler encounters in shipped streams but the compiler does **not** register — e.g.
-`Texture`, `OnDemandTexture`, `AudioFile`, and the UI/button/AI-strategy families. The decompiler labels these
+`AudioFile` and the UI/button/AI-strategy families. The decompiler labels these
 rather than crashing, but they cannot round-trip. The remaining art / texture / audio-file families belong to the
 planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`. (`W3DAnimation`, `W3DMesh`,
-`W3DContainer`, `W3DHierarchy`, `W3DCollisionBox`, `FXParticleSystemTemplate`, and now `PackedTextureImage` /
-`OnDemandTextureImage` have left this list — see the art/content-pipeline section above and findings 0020/0022.
-`Texture`/`OnDemandTexture` record layout is characterized in finding 0023, with a pass-through plan, but is **not
-yet modeled** — their records carry a literal DDS payload / lazy placeholder, out of scope for the 0022 phase.)
+`W3DContainer`, `W3DHierarchy`, `W3DCollisionBox`, `FXParticleSystemTemplate`, `PackedTextureImage` /
+`OnDemandTextureImage`, and now `Texture` / `OnDemandTexture` have left this list — see the art/content-pipeline
+section above and findings 0020/0022/0024. The `Texture`/`OnDemandTexture` record layout was characterized in
+finding 0023 and is now **modeled byte-exact** (0024, shipped-DDS-payload pass-through) — no longer "not modeled".)
 
 ## Known decompiler (read-direction) limitations
 

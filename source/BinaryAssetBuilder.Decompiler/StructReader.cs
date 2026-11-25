@@ -260,6 +260,20 @@ namespace BinaryAssetBuilder.Decompiler
                 return;
             }
 
+            // --- Texture payload: the shipped Texture record's DataBlob wraps a LITERAL complete D3D9 .dds file
+            //     (findings 0023/0024). Its authoring XSD fields are pipelineOnly (compile-time directives), so the
+            //     BYO schema has no runtime payload element; the SchemaIndex (parsed from the raw XSD) has no
+            //     <Payload> element either, so the generic DataBlob walk's SetAttr would DROP it. Like W3DMesh's
+            //     packed VertexData, we emit the shipped DDS bytes verbatim as a runtime <Payload> base64 element
+            //     (bypassing the schema filter); the compiler's in-code binding (SchemaSet.AugmentRuntimeTexture
+            //     Payload) lets it validate and Marshaler.Texture writes it straight back — byte-exact, no DXT
+            //     re-encode. (OnDemandTexture's payload is a null pointer -> the generic pointer path emits nothing.)
+            if (fi.DeclaringType == typeof(SageBinaryData.Texture) && name == "Payload")
+            {
+                ReadTexturePayload(off, target);
+                return;
+            }
+
             // --- pointer fields: the slot holds the on-disk offset of the pointee (a relocation). GameObject
             //     reaches almost all of its content through pointers (module lists, sub-structs, string lists). ---
             if (f.Kind == TypeLayout.Kind.Pointer && ft.IsPointer)
@@ -669,6 +683,22 @@ namespace BinaryAssetBuilder.Decompiler
             vd.Add(new XElement(_ns + "VertexDeclaration", ReadBlobBase64(vdOff, vdCount, "W3DMesh VertexDeclaration")));
             vd.Add(new XElement(_ns + "Bones", _asset.RenderUShortList(bonesOff, bonesCount, "W3DMesh Bones")));
             target.Add(vd);
+        }
+
+        // Emit the shipped Texture record's DataBlob payload (a literal complete D3D9 .dds file) as a runtime
+        // <Payload> base64 element the compiler's Texture pass-through writes straight back, byte-exact. The DataBlob
+        // is {Data ptr @off, Size uint @off+4}; dataOff is the relocated on-disk offset of the DDS bytes. A null
+        // pointer / zero size emits nothing (defensive — every shipped Texture carries a DDS payload). Reuses
+        // ReadBlobBase64 (the shared W3DMesh blob reader) rather than re-deriving the base64 render.
+        private void ReadTexturePayload(uint off, XElement target)
+        {
+            uint dataOff = _asset.ReadSlot(off);
+            uint size = _asset.ReadSlot(off + 4);
+            if (size == 0 || !_asset.ReloFroms.Contains(off))
+            {
+                return;
+            }
+            target.Add(new XElement(_ns + "Payload", ReadBlobBase64(dataOff, size, "Texture payload")));
         }
 
         private string ReadBlobBase64(uint off, long count, string what)

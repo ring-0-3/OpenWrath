@@ -65,7 +65,8 @@ and never let a green gate imply an uncompared field is right. (`docs/design/ver
   fresh-context reuse-duplication tax), test provenance, fresh-vs-shared-context.
 - `docs/findings/` — dated truths; **0012** (RefPack), **0013** (schema-edit remediation), **0014/0018/0019/0020**
   (art pipeline — see SOLVED below), **0021** (texture/geometry mechanism recon), **0022** (texture UI-atlas records
-  byte-exact), **0023** (shipped `Texture` record = literal DDS blob — recon that specs the pass-through).
+  byte-exact), **0023** (shipped `Texture` record = literal DDS blob — recon that specs the pass-through), **0024**
+  (`Texture`/`OnDemandTexture` records byte-exact via the shipped-DDS-payload pass-through).
 - `docs/design/community-mods-as-frontier-reference.md` — study community mods for *mechanism*, reimplement clean;
   community ≠ ground truth. `docs/design/blender-integration.md` — authoring tier + the re-pack decidable gate.
 - `docs/reference/COVERAGE.md` — the per-type ground-truth matrix.
@@ -106,13 +107,17 @@ emit is general (`SchemaIndex.GetReferenceChoiceElement`/`IsReferenceChoiceType`
 the **required-but-null polymorphic module** → empty-wrapper rule is schema-driven (`SchemaIndex.GetRequiredElementNames`,
 0020); `TypeId = FastHash(name)`, **TypeHash harvested from the shipped manifest** (never the TW scaffold — 0020).
 
-**Textures — in progress (mechanism recon 0021; records byte-exact 0022; `Texture` record mapped 0023):**
-`PackedTextureImage`/`OnDemandTextureImage` (UI-atlas records) are **byte-exact** (0022, plain registration). The
-shipped **`Texture`** record is byte-inspected (0023): a 12-byte header (`Flags=0`, `ptr=12`, `payloadLen`) + a
-**literal complete D3D9 DDS** (one `04000000 ffffffff` relo); `OnDemandTexture` is an **8-byte all-zero** lazy
-placeholder. So the **pixel payload passes through byte-exact for *shipped* textures** (the 0018/W3DMesh pattern — no
-DXT re-encode); only **authoring *new* textures is stated-tier** (`Texture` fields are `pipelineOnly`; EA's DXT
-compressor isn't bit-reproducible). Build order: **`Texture`/`OnDemandTexture` shipped-payload pass-through** (next
-oracle-strong win, specced in 0023) → **loose-file `add-search-path` override** (the route the 4K pack rides —
+**Textures — records SOLVED byte-exact (mechanism recon 0021; UI-atlas records 0022; `Texture` recon 0023; records
+pass-through 0024):** `PackedTextureImage`/`OnDemandTextureImage` (UI-atlas records) are **byte-exact** (0022, plain
+registration), and now **`Texture`/`OnDemandTexture`** (the records themselves) are **byte-exact** (0024, whole-stream
+**1575/1575** + **123/123**). A shipped `Texture` wraps a **literal complete D3D9 DDS** blob (recon 0023: 12-byte
+header — `Base=0`, `ptr=12`, `payloadLen` — + the DDS, one `04000000 ffffffff` relo), so the **pixel payload passes
+through byte-exact for *shipped* textures** (the 0018/W3DMesh pattern — decompiler emits a runtime `<Payload>` base64
+element, compiler writes it back into a shared `DataBlob`; no DXT re-encode). ⚠ The recon's "`Flags@0x00`" is the
+**universal 4-byte `BaseAssetType` placeholder, not a separate field** — the model is `{BaseAssetType Base; DataBlob
+Payload}` (byte-decided vs the shipped bytes, not the recon's suggested struct); `OnDemandTexture` is `{Base; byte*
+Payload(null)}` → 8 zero bytes. Schema reach added **in code** (`SchemaSet.AugmentRuntimeTexturePayload`,
+schema-selftest-guarded), never a `.xsd` edit. Only **authoring *new* textures is stated-tier** (EA's DXT compressor
+isn't bit-reproducible). Next build order: **loose-file `add-search-path` override** (the route the 4K pack rides —
 cheapest *visible* in-game capability, stated-tier, in-game-acceptance gate) → new record-borne content last. Full
-plan + community-mod discipline: `docs/findings/0021-*.md`/`0023-*.md` + `docs/design/community-mods-as-frontier-reference.md`.
+plan + community-mod discipline: `docs/findings/0021-*.md`/`0023-*.md`/`0024-*.md` + `docs/design/community-mods-as-frontier-reference.md`.

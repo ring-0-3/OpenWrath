@@ -4,6 +4,13 @@
 pillar (the `Texture` shipped-payload pass-through, [0021](0021-community-mod-texture-geometry-mechanism-recon.md)
 build-order milestone 2). No implementation was done here (the boundary of the 0022 phase).
 
+> **⚠ Corrected by [0024](0024-texture-ondemandtexture-byte-exact-shipped-payload-passthrough.md).** The "`Flags@0x00`"
+> field named below (the first 4-byte dword, always `0`) is **not a separate field** — it is the universal zeroed
+> `BaseAssetType` placeholder every asset carries. The byte-decided model is `{ BaseAssetType Base; DataBlob Payload }`
+> (the relocated payload pointer sits at offset 4, leaving no room for a Flags word), confirmed byte-exact in 0024.
+> The DDS-blob layout, mip-size/payloadLen equality, and format distribution below all stand; only the "Flags" label
+> was a mischaracterization of the Base slot.
+
 > **Byte-inspected, no mod content.** The records below were read directly out of the **shipped** KW `static_common`
 > linked stream (EA's own data, bring-your-own, read-only). This answers the explicit open question 0021 left
 > dangling: *is the compiled `Texture` record's payload a literal DDS blob or a re-wrapped surface?* — kept distinct

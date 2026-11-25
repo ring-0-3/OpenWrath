@@ -14,10 +14,11 @@ The per-area sections below hold the detail; this is the **path**. OpenWrath is 
 and the texture records) to a *creation platform* (author new content — the §4 frontier). The ordering is by oracle
 strength: finish what's decidable, then validate the keystone, then the frontier.
 
-1. 🔧 **`Texture` / `OnDemandTexture` shipped-payload pass-through** (current phase; spec in finding
+1. ✅ **`Texture` / `OnDemandTexture` shipped-payload pass-through** (DONE 2026-11-25; finding
+   [0024](docs/findings/0024-texture-ondemandtexture-byte-exact-shipped-payload-passthrough.md), spec'd by
    [0023](docs/findings/0023-texture-ondemandtexture-record-layout-recon.md)). Byte-exact for *shipped* textures via
-   the 0018 pass-through pattern (the record is a literal DDS blob) — closes the texture *records*. Authoring *new*
-   textures stays stated-tier.
+   the 0018 pass-through pattern (the record wraps a literal DDS blob) — whole-stream **1575/1575** + **123/123**,
+   closing the texture *records*. Authoring *new* textures stays stated-tier.
 2. 📋 **Finish the byte-exact surface** (oracle-strong, cheap). Sweep the remaining "Not modeled" types for
    registration-only wins (as the atlas records / particles turned out to be); **`AudioFile`** (likely a
    records-tractable + encoded-payload-pass-through split, like textures — shipped audio byte-exact, new audio
@@ -46,13 +47,14 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
 - ✅ Native-Linux port of BinaryAssetBuilder (runs under `dotnet`, no Wine), byte-faithful to EA's output.
 - ✅ Correct x64→32-bit on-disk pointer layout; case-insensitive paths; native XInclude / expressions / RefPack.
 - ✅ Cross-stream reference typing via reference manifests (`-rm`).
-- ✅ **40 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
+- ✅ **42 asset types registered** (`Plugin.cs` `Initialize()`): the five core gameplay types plus the gameplay
   breadth batch (Upgrade, SpecialPower, OCL, FXList, DamageFX, ExperienceLevel, LogicCommand(Set), Stance,
   RadiusCursor, Weather, Mouse, OnlineChatColors, ConnectionLineManager, PhaseEffect, Road, MultiplayerColor),
   the audio/LOD/environment batch (AmbientStream, MusicTrack, DialogEvent, LargeGroupAudioMap,
   Static/Dynamic GameLOD, GameLODPreset, CrowdResponse, VideoEventList, Environment, AudioEvent, Multisound,
   MiscAudio, AudioSettings, AudioLOD), the first content-pipeline data type (FXParticleSystemTemplate,
-  finding 0020), and the first texture-pillar records (PackedTextureImage, OnDemandTextureImage, finding 0022).
+  finding 0020), the texture-pillar UI-atlas records (PackedTextureImage, OnDemandTextureImage, finding 0022),
+  and the texture records themselves (Texture, OnDemandTexture — shipped-DDS-payload pass-through, finding 0024).
 - ✅ Compile-fail bug-class fixes surfaced by the ground-truth gate (field-order error; out-of-schema enum
   values) — see Verification.
 - ✅ **MultiplayerColor** recompile fixed — modeled its inline `MetaGameSide` field (8/8 byte-exact). The one
@@ -97,10 +99,11 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     byte-compare every asset to the **original shipped bytes**, bucketed per type (byte-exact / same-size
     value-diff / size-mismatch / recompile-missing, with first-diff offsets). This proves the output is *what
     the game actually loads*, and it has surfaced real bugs closed-loop alone could not.
-- ✅ **Ground-truth results (2026-11-24; FX + textures added 2026-11-25):** of the 40 registered types, **37 reproduce
+- ✅ **Ground-truth results (2026-11-24; FX + textures added 2026-11-25):** of the 42 registered types, **39 reproduce
   EA's shipped bytes byte-exact on sampled instances** (MultiplayerColor joined after modeling its inline `MetaGameSide`
   field; FXParticleSystemTemplate joined via the plain pipeline + a required-null-module decompiler fix, finding 0020;
-  PackedTextureImage / OnDemandTextureImage joined via plain registration — whole-stream 870/870 and 123/123, finding 0022);
+  PackedTextureImage / OnDemandTextureImage joined via plain registration — whole-stream 870/870 and 123/123, finding 0022;
+  Texture / OnDemandTexture joined via a shipped-DDS-payload pass-through — whole-stream 1575/1575 and 123/123, finding 0024);
   GameObject is **40/50** on a *widened* sample, with the residual characterized as module-tag / weak-ref name
   recovery bounded by StringHashes coverage (byte-exact once the name is in the table); Environment is
   structurally exact with one known-lossy weak-ref; Road has no sampled instances. Full matrix, sampled
