@@ -245,12 +245,21 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     `modkit/lib/reorder_stream.py` (lockstep reorder of manifest + `.bin/.relo/.imp`, relo/imp asset-local so safe;
     then `retag_checksum.py`) and `modkit/lib/check_forward_refs.py` (lints a built stream — FATAL
     `WeaponTemplate → GameObject/WeaponTemplate` forward edges, BENIGN `→ Texture`; exit 1 to gate a build).
-  - 📋 **Wire forward-ref safety into the build.** (a) Fold `check_forward_refs.py` into `openwrath mod check` so a
-    fatal forward edge fails pre-flight with the fix hint. (b) **Auto-ordering build pass**: when assembling the
-    overlay, topologically emit so a nugget's referenced projectile/warhead precede the weapon — so projectile mods
-    "just work" without manual `reorder_stream.py` surgery. (c) Grow the FATAL/BENIGN classifier as more
-    order-sensitive reference kinds are verified in-game (today only weapon→projectile/warhead is proven fatal,
-    →Texture proven benign; everything else is reported SUSPECT, not asserted).
+  - ✅ **Forward-ref safety wired into the build (2026-11-26).** `mod build-local` now runs an **auto-ordering pass**
+    after applying overrides: it detects every FATAL forward edge (shared `check_forward_refs.scan`), reorders so each
+    nugget's projectile/warhead precede the weapon (`reorder_stream.py --auto-fix`, lockstep bin/relo/imp), re-checksums,
+    and **gates** the build on a clean result — so projectile mods "just work" with zero manual surgery (verified
+    end-to-end: a pure-`ProjectileNugget` commando + Avatar build to 0 fatal edges and launch in-game). The forward-ref
+    gate lives in the *build* path (order is a compiled-stream property, not a source one, so `mod check` — which is
+    source-level — isn't the right home; the stream-level gate in build-local is). Still 📋: (a) apply the same pass to
+    `mod bake`; (b) grow the FATAL/BENIGN classifier as more order-sensitive reference kinds are verified in-game
+    (today only weapon→projectile/warhead is proven fatal, →Texture proven benign; everything else is SUSPECT, not asserted).
+  - ✅ **Two build-local robustness fixes surfaced by the above (2026-11-26).** (a) **Bounded temp:** `_apply_overrides`
+    now deletes each intermediate `op{N}` stream dir once the next supersedes it — previously it kept a full ~400 MB
+    copy per override (tens of GB for a large mod → **disk-full → silent partial write**), now ~2 copies regardless of
+    override count. (b) **Partial-write detection:** each splice/insert step now verifies **all four** stream files
+    exist (not just the manifest), so a truncated write (e.g. `ENOSPC`) fails at its source with the producer's real
+    error instead of an opaque `FileNotFoundError` in the next step.
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
 

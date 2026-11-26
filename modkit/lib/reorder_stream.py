@@ -7,168 +7,170 @@
 # concatenated strictly in MANIFEST ORDER. Reordering the manifest entries WITHOUT reordering those
 # three buffers desyncs every asset after the first move -> the engine reads the wrong bytes -> crash.
 # (The reference buffer and the three name buffers are addressed by ABSOLUTE per-entry offsets, so they
-#  stay byte-identical and are NOT permuted.)
+#  stay byte-identical and are NOT permuted. relocations/imports are asset-LOCAL, so moving a block is safe.)
 #
 # This tool applies the SAME permutation to the entry table and to the .bin/.relo/.imp data blocks.
 # After writing, re-checksum with retag_checksum.py (identity depends on entry order).
 #
-# Manifest layout (mirrors source/BinaryAssetBuilder.Decompiler/Containers/Manifest.cs):
-#   [0]   byte isBigEndian, [1] byte isLinked, [2..3] uint16 version
-#   [4..47] 11 x uint32 header: h[2]=AssetCount, h[7]=AssetRefBufSize, h[8]=RefManNameBufSize,
-#           h[9]=AssetNameBufSize, h[10]=SourceFileNameBufSize   (h[0]=StreamChecksum)
-#   [48..]  AssetCount x 44-byte entries (11 ints):
-#           TypeId, InstanceId, TypeHash, InstanceHash, AssetRefOffset, AssetRefCount,
-#           NameOffset, SourceFileNameOffset, InstanceDataSize, RelocationDataSize, ImportsDataSize
-#   then: AssetReferenceBuffer | ReferenceManifestNameBuffer | AssetNameBuffer | SourceFileNameBuffer
-# Each of .bin/.relo/.imp = 4-byte StreamChecksum prefix + per-asset data concatenated in manifest order.
+# Manifest layout mirrors source/BinaryAssetBuilder.Decompiler/Containers/Manifest.cs (see check_forward_refs.py).
 #
 # usage:
 #   reorder_stream.py <in_prefix> <out_prefix> --before <Type:Name> <Type:Name> [more...]
-#     Moves the listed assets (in the given order) to immediately BEFORE the first <Type:Name> (the anchor).
-#     i.e. the first arg after --before is the ANCHOR; the rest are MOVED to just ahead of it.
-import os, sys, struct
+#       Move the listed assets (in order) to immediately BEFORE the first <Type:Name> (the anchor).
+#   reorder_stream.py <in_prefix> <out_prefix> --auto-fix
+#       Detect every FATAL forward reference (check_forward_refs.scan) and reorder to eliminate them:
+#       move each forward-referenced projectile/warhead ahead of its earliest referrer (topologically among
+#       themselves). Prints what moved; no-op (plain copy) if there are none. Finding 0011.
+import sys, os, struct, shutil
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import check_forward_refs as cfr  # single source of truth for fast_hash + forward-edge scan/classify
 
 M = 0xffffffff
 HEADER, ENTRY = 48, 44
-
-
-def fast_hash(s):
-    b = s.encode('ascii'); L = len(b)
-    if L == 0: return 0x1337C0DE
-    h = L & M; extra = L & 3; n = L >> 2; i = 0
-    u16 = lambda j: b[j] | (b[j + 1] << 8)
-    while n > 0:
-        h = (h + u16(i)) & M
-        h = (h ^ (((u16(i + 2) ^ ((h << 5) & M)) << 11) & M)) & M
-        h = (h + (h >> 11)) & M
-        i += 4; n -= 1
-    if extra == 1:
-        h = (h + b[i]) & M; h = (h ^ ((h << 10) & M)) & M; h = (h + (h >> 1)) & M
-    elif extra == 2:
-        h = (h + u16(i)) & M; h = (h ^ ((h << 11) & M)) & M; h = (h + (h >> 17)) & M
-    elif extra == 3:
-        h = (h + u16(i)) & M; h = (h ^ ((h << 16) & M)) & M
-        h = (h ^ ((b[i + 2] << 18) & M)) & M; h = (h + (h >> 11)) & M
-    h = (h ^ ((h << 3) & M)) & M; h = (h + (h >> 5)) & M
-    h = (h ^ ((h << 2) & M)) & M; h = (h + (h >> 15)) & M; h = (h ^ ((h << 10) & M)) & M
-    return h & M
+fast_hash = cfr.fast_hash
 
 
 def key_for(spec):
-    # "Type:Name" -> (fast_hash(Type), fast_hash(name.lower()))   (type as-is, instance lowercased)
     tn, nm = spec.split(':', 1)
     return (fast_hash(tn), fast_hash(nm.lower()))
 
 
-def load_entries(man):
-    hdr = list(struct.unpack_from('<11I', man, 4))
-    n = hdr[2]
-    recs = [bytes(man[HEADER + i * ENTRY: HEADER + (i + 1) * ENTRY]) for i in range(n)]
-    tail = bytes(man[HEADER + n * ENTRY:])  # refbuf + 3 name buffers (absolute-addressed; unchanged)
-    return hdr, recs, tail
+def _sizes(rec):
+    return struct.unpack_from('<3i', rec, 32)  # InstanceDataSize, RelocationDataSize, ImportsDataSize
 
 
-def sizes(rec):
-    # InstanceDataSize, RelocationDataSize, ImportsDataSize at +32/+36/+40
-    inst, relo, imp = struct.unpack_from('<3i', rec, 32)
-    return inst, relo, imp
-
-
-def split_buffer(buf, order_sizes):
-    # buf = 4-byte prefix + concat(block_i). Return (prefix, [block_i...]) in current order.
-    prefix = buf[:4]
-    blocks = []
-    off = 4
-    for sz in order_sizes:
+def _split(buf, blk_sizes, what):
+    prefix = buf[:4]; blocks = []; off = 4
+    for sz in blk_sizes:
         blocks.append(buf[off:off + sz]); off += sz
     if off != len(buf):
-        raise SystemExit(f"buffer size mismatch: consumed {off} of {len(buf)} (sum+4 != filesize)")
+        raise SystemExit(f"{what}: size mismatch (consumed {off} of {len(buf)}; sum+4 != filesize)")
     return prefix, blocks
 
 
-def main():
-    if len(sys.argv) < 5 or sys.argv[3] != '--before':
-        sys.exit(__doc__)
-    inp, outp = sys.argv[1], sys.argv[2]
-    specs = sys.argv[4:]
-    anchor = key_for(specs[0])
-    movers = [key_for(s) for s in specs[1:]]
-    if not movers:
-        sys.exit("need an anchor and at least one asset to move before it")
+def load_all(prefix):
+    man = bytearray(open(prefix + '.manifest', 'rb').read())
+    hdr = list(struct.unpack_from('<11I', man, 4)); n = hdr[2]
+    recs = [bytes(man[HEADER + i * ENTRY: HEADER + (i + 1) * ENTRY]) for i in range(n)]
+    tail = bytes(man[HEADER + n * ENTRY:])
+    inst = [_sizes(r)[0] for r in recs]; relo = [_sizes(r)[1] for r in recs]; imp = [_sizes(r)[2] for r in recs]
+    bpre, bblk = _split(open(prefix + '.bin', 'rb').read(), inst, 'bin')
+    rpre, rblk = _split(open(prefix + '.relo', 'rb').read(), relo, 'relo')
+    ipre, iblk = _split(open(prefix + '.imp', 'rb').read(), imp, 'imp')
+    return man, hdr, recs, tail, (bpre, bblk), (rpre, rblk), (ipre, iblk)
 
-    man = bytearray(open(inp + '.manifest', 'rb').read())
-    hdr, recs, tail = load_entries(man)
+
+def apply_permutation(in_prefix, out_prefix, perm):
+    """perm = list of ORIGINAL entry indices in the desired NEW order (a permutation of range(n))."""
+    man, hdr, recs, tail, (bpre, bblk), (rpre, rblk), (ipre, iblk) = load_all(in_prefix)
     n = len(recs)
-    keyf = lambda r: struct.unpack_from('<2I', r, 0)  # (TypeId, InstanceId)
+    if sorted(perm) != list(range(n)):
+        raise SystemExit("internal: perm is not a permutation of range(n)")
+    out_man = bytearray(man[:HEADER])
+    out_bin = bytearray(bpre); out_relo = bytearray(rpre); out_imp = bytearray(ipre)
+    for oi in perm:
+        out_man += recs[oi]; out_bin += bblk[oi]; out_relo += rblk[oi]; out_imp += iblk[oi]
+    out_man += tail
+    assert len(out_man) == len(man)
+    open(out_prefix + '.manifest', 'wb').write(out_man)
+    open(out_prefix + '.bin', 'wb').write(out_bin)
+    open(out_prefix + '.relo', 'wb').write(out_relo)
+    open(out_prefix + '.imp', 'wb').write(out_imp)
 
-    # index lookup
-    idx = {}
-    for i, r in enumerate(recs):
-        idx[keyf(r)] = i
-    for k, s in zip([anchor] + movers, specs):
-        if k not in idx:
-            sys.exit(f"asset not found in stream: {s}  (hashes {k[0]:#010x},{k[1]:#010x})")
-    anchor_i = idx[anchor]
-    mover_set = set(movers)
 
-    # build new entry order: drop movers from their spots; emit them (in given order) right before the anchor
-    mover_recs = {keyf(recs[idx[k]]): recs[idx[k]] for k in movers}
-    new_order_recs = []
-    for i, r in enumerate(recs):
-        if keyf(r) in mover_set:
+def _keys(recs):
+    return [struct.unpack_from('<2I', r, 0) for r in recs]
+
+
+def perm_before(recs, anchor_key, mover_keys):
+    keys = _keys(recs); pos = {k: i for i, k in enumerate(keys)}
+    for k in [anchor_key] + mover_keys:
+        if k not in pos:
+            raise SystemExit(f"asset not found: hashes {k[0]:#010x},{k[1]:#010x}")
+    anchor_i = pos[anchor_key]; mover_set = set(mover_keys)
+    perm = []
+    for i, k in enumerate(keys):
+        if k in mover_set:
             continue
         if i == anchor_i:
-            for k in movers:
-                new_order_recs.append(mover_recs[k])
-        new_order_recs.append(r)
-    if len(new_order_recs) != n:
-        sys.exit(f"internal: new order has {len(new_order_recs)} != {n} entries")
+            perm.extend(pos[mk] for mk in mover_keys)
+        perm.append(i)
+    return perm
 
-    # current per-entry sizes, in ORIGINAL order, to split the 3 data buffers
-    orig_inst = [sizes(r)[0] for r in recs]
-    orig_relo = [sizes(r)[1] for r in recs]
-    orig_imp = [sizes(r)[2] for r in recs]
 
-    bin_ = open(inp + '.bin', 'rb').read()
-    relo = open(inp + '.relo', 'rb').read()
-    imp = open(inp + '.imp', 'rb').read()
-    bpre, bblocks = split_buffer(bin_, orig_inst)
-    rpre, rblocks = split_buffer(relo, orig_relo)
-    ipre, iblocks = split_buffer(imp, orig_imp)
+def _toposort(nodes, edges):
+    # edges: list of (u, v) meaning u depends-on/must-precede-nothing... here (src,tgt): tgt must come BEFORE src.
+    # We want order with every tgt before its src. Build "must precede" = tgt -> src, emit via Kahn.
+    from collections import defaultdict, deque
+    succ = defaultdict(list); indeg = {x: 0 for x in nodes}
+    for (src, tgt) in edges:
+        if src in nodes and tgt in nodes:
+            succ[tgt].append(src); indeg[src] += 1
+    q = deque(sorted(x for x in nodes if indeg[x] == 0))
+    out = []
+    while q:
+        x = q.popleft(); out.append(x)
+        for y in sorted(succ[x]):
+            indeg[y] -= 1
+            if indeg[y] == 0:
+                q.append(y)
+    if len(out) != len(nodes):            # cycle (shouldn't happen for proj/warhead) -> stable fallback
+        out = sorted(nodes)
+    return out
 
-    # map original-entry key -> original index, so we can fetch its data block
-    key_to_orig = {keyf(recs[i]): i for i in range(n)}
 
-    # reassemble each data buffer in the NEW entry order
-    out_bin = bytearray(bpre); out_relo = bytearray(rpre); out_imp = bytearray(ipre)
-    for r in new_order_recs:
-        oi = key_to_orig[keyf(r)]
-        out_bin += bblocks[oi]; out_relo += rblocks[oi]; out_imp += iblocks[oi]
+def perm_autofix(in_prefix):
+    """Build a permutation that eliminates every FATAL forward edge, or None if there are none."""
+    buckets, _, _ = cfr.scan(in_prefix + '.manifest')
+    fatal = buckets['FATAL']
+    if not fatal:
+        return None, []
+    edges = [(si, ti) for (si, _, _, ti, _, _) in fatal]
+    targets = set(ti for _, ti in edges)
+    anchor = min(si for si, _ in edges)                 # earliest referrer of any fatal edge
+    ordered_targets = _toposort(targets, edges)         # a target that references another target comes first
+    man, hdr, recs, *_ = load_all(in_prefix)
+    n = len(recs)
+    non_targets = [i for i in range(n) if i not in targets]
+    insert_at = len(non_targets)
+    for idx, orig in enumerate(non_targets):
+        if orig >= anchor:
+            insert_at = idx; break
+    perm = non_targets[:insert_at] + ordered_targets + non_targets[insert_at:]
+    moved = [(ti, fatal[[t for _, t in edges].index(ti)]) for ti in ordered_targets]
+    return perm, fatal
 
-    # reassemble manifest: header(unchanged; checksum retagged later) + new entries + tail(unchanged)
-    out_man = bytearray(man[:HEADER])
-    for r in new_order_recs:
-        out_man += r
-    out_man += tail
 
-    assert len(out_man) == len(man), (len(out_man), len(man))
-    assert len(out_bin) == len(bin_) and len(out_relo) == len(relo) and len(out_imp) == len(imp)
-
-    open(outp + '.manifest', 'wb').write(out_man)
-    open(outp + '.bin', 'wb').write(out_bin)
-    open(outp + '.relo', 'wb').write(out_relo)
-    open(outp + '.imp', 'wb').write(out_imp)
-
-    # report the new positions of the involved assets
-    newpos = {}
-    for i, r in enumerate(new_order_recs):
-        k = keyf(r)
-        if k == anchor or k in mover_set:
-            newpos[k] = i
-    print(f"reordered {n} entries + bin/relo/imp blocks in lockstep -> {outp}.*")
-    for k, s in zip([anchor] + movers, specs):
-        print(f"  {s:50s} -> new index {newpos[k]}")
-    print("NOTE: run retag_checksum.py on the OUTPUT prefix next (identity depends on entry order).")
+def main():
+    if len(sys.argv) >= 4 and sys.argv[3] == '--before':
+        inp, outp = sys.argv[1], sys.argv[2]
+        specs = sys.argv[4:]
+        if len(specs) < 2:
+            sys.exit("need an anchor and at least one asset to move before it")
+        _, _, recs, *_ = load_all(inp)
+        perm = perm_before(recs, key_for(specs[0]), [key_for(s) for s in specs[1:]])
+        apply_permutation(inp, outp, perm)
+        print(f"reordered {len(recs)} entries + bin/relo/imp in lockstep -> {outp}.*")
+        print("NOTE: run retag_checksum.py on the OUTPUT prefix next.")
+        return
+    if len(sys.argv) == 4 and sys.argv[3] == '--auto-fix':
+        inp, outp = sys.argv[1], sys.argv[2]
+        perm, fatal = perm_autofix(inp)
+        if perm is None:
+            if inp != outp:
+                for ext in ('manifest', 'bin', 'relo', 'imp'):
+                    shutil.copyfile(inp + '.' + ext, outp + '.' + ext)
+            print("auto-fix: no FATAL forward references — nothing to reorder.")
+            return
+        apply_permutation(inp, outp, perm)
+        print(f"auto-fix: moved {len(set(t for _,_,_,t,_,_ in fatal))} forward-referenced template(s) "
+              f"ahead of their referrer(s) to clear {len(fatal)} FATAL forward edge(s):")
+        for (si, sn, st, ti, tn, tt) in fatal:
+            print(f"    {sn}  ->  {tn}  (was +{ti - si})")
+        print("NOTE: run retag_checksum.py on the OUTPUT prefix next.")
+        return
+    sys.exit(__doc__)
 
 
 if __name__ == '__main__':

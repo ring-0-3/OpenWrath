@@ -96,10 +96,11 @@ def classify(src_type, tgt_type):
     return "SUSPECT"
 
 
-def main():
-    if len(sys.argv) != 2:
-        sys.exit("usage: check_forward_refs.py <manifest-or-prefix>")
-    d, ent, names, arbuf_off = load(sys.argv[1])
+def scan(path):
+    """Scan a manifest for forward references. Returns (buckets, total_refs, n_assets) where buckets is
+    {verdict: [(src_idx, src_name, src_type, tgt_idx, tgt_name, tgt_type), ...]}. Shared by the lint (main)
+    and the auto-fixer (reorder_stream) so classification + graph-walk live in ONE place (invariant 3)."""
+    d, ent, names, arbuf_off = load(path)
     pos = {(e[0], e[1]): i for i, e in enumerate(ent)}
     buckets = {"FATAL": [], "SUSPECT": [], "BENIGN": []}
     total_refs = 0
@@ -112,10 +113,16 @@ def main():
             if j is not None and j > i:
                 v = classify(st, tname(rt))
                 buckets[v].append((i, names[i], st, j, names[j], tname(rt)))
+    return buckets, total_refs, len(ent)
 
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit("usage: check_forward_refs.py <manifest-or-prefix>")
+    buckets, total_refs, n_assets = scan(sys.argv[1])
     nf, ns, nb = len(buckets["FATAL"]), len(buckets["SUSPECT"]), len(buckets["BENIGN"])
     print(f"forward-reference lint: {nf} FATAL, {ns} SUSPECT, {nb} BENIGN "
-          f"(of {total_refs} refs across {len(ent)} assets)")
+          f"(of {total_refs} refs across {n_assets} assets)")
     for v in ("FATAL", "SUSPECT", "BENIGN"):
         if not buckets[v]:
             continue

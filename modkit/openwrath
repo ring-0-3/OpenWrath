@@ -754,16 +754,31 @@ def _apply_overrides(work: Path, cur: Path, stream: str, name: str,
     `lib/splice_asset.py` / `lib/insert_asset.py` (the single source of the manifest/bin/relo/imp format)
     rather than re-deriving it. (Those tools operate on `static_mod.*`-named files, so `cur` must hold the
     stream under that normalized name — the caller arranges it.)"""
-    import subprocess
+    import subprocess, shutil
+    # A linked stream dir is only usable if ALL FOUR parallel files exist — a splice/insert that writes the
+    # manifest but dies before .relo/.imp (e.g. disk full) leaves a partial dir that fails OPAQUELY in the *next*
+    # step. Check the full set here so a partial write is caught at its source with the producer's own stderr.
+    def _complete(d: Path) -> bool:
+        return all((d / f"{stream}.{ext}").exists() for ext in ("manifest", "bin", "relo", "imp"))
+    # Each op step writes a FULL copy of the ~400 MB stream; keeping all N (one per override) needs N×400 MB of
+    # temp (tens of GB for a large mod → disk-full). Delete each intermediate op dir once the next supersedes it,
+    # bounding temp to ~2 copies regardless of override count. Never delete the caller's input dir (`cur`).
+    base_in = cur
     step = 0
+
+    def _advance(prev, nxt):
+        if prev is not base_in and str(prev).startswith(str(work)):
+            shutil.rmtree(prev, ignore_errors=True)
+        return nxt
+
     for tid, iid, af, mf in replace:
         nxt = work / f"op{step}"; step += 1
         r = subprocess.run(["python3", str(LIB / "splice_asset.py"), str(cur), str(af),
                             str(mf), str(nxt), f"{tid:08x}", f"{iid:08x}"],
                            capture_output=True, text=True)
-        if not (nxt / f"{stream}.manifest").exists():
-            sys.exit(f"error: splice failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
-        cur = nxt
+        if not _complete(nxt):
+            sys.exit(f"error: splice failed for {tid:08x}:{iid:08x} (incomplete stream dir):\n{r.stdout}{r.stderr}")
+        cur = _advance(cur, nxt)
     for tid, iid, af, mf in insert:
         nxt = work / f"op{step}"; step += 1
         cmd = ["python3", str(LIB / "insert_asset.py"), str(cur), str(af),
@@ -771,9 +786,9 @@ def _apply_overrides(work: Path, cur: Path, stream: str, name: str,
         if tid in adopt_th:                       # adopt the stream's schema hash for this drifted type
             cmd += ["--type-hash", f"{adopt_th[tid]:08x}"]
         r = subprocess.run(cmd, capture_output=True, text=True)
-        if not (nxt / f"{stream}.manifest").exists():
-            sys.exit(f"error: insert failed for {tid:08x}:{iid:08x}:\n{r.stdout}{r.stderr}")
-        cur = nxt
+        if not _complete(nxt):
+            sys.exit(f"error: insert failed for {tid:08x}:{iid:08x} (incomplete stream dir):\n{r.stdout}{r.stderr}")
+        cur = _advance(cur, nxt)
     return cur
 
 
@@ -1320,6 +1335,30 @@ def _install_overlay_stream(cfg: dict, stream: str):
     return big, found, ver_arch, ver_bytes
 
 
+def _autoorder_forward_refs(cur: Path, stream: str) -> None:
+    """Finding 0011: a `ProjectileNugget`'s projectile/warhead bind by forward lookup at load — a template
+    ordered AFTER the weapon in the compiled stream binds to null and the weapon silently won't launch/detonate.
+    After the overrides are applied, detect every FATAL forward edge and reorder the stream so each target
+    precedes its referrer (projectile mods then 'just work' without manual surgery), re-checksum, and GATE the
+    build on a clean result. No-op when there are none (the common case) — the stream is left untouched."""
+    import subprocess
+    pfx = str(cur / stream)
+    fix = subprocess.run(["python3", str(LIB / "reorder_stream.py"), pfx, pfx, "--auto-fix"],
+                         capture_output=True, text=True)
+    out = (fix.stdout + fix.stderr).strip()
+    if "no FATAL forward references" in out:
+        return                                  # nothing to do; assemble-time checksum still valid
+    print("  forward-ref auto-order (finding 0011):")
+    print("    " + out.replace("\n", "\n    "))
+    # reordering changed entry order -> the stream identity (checksum over the ordered tuples) must be recomputed.
+    subprocess.run(["python3", str(LIB / "retag_checksum.py"), pfx], capture_output=True, text=True)
+    gate = subprocess.run(["python3", str(LIB / "check_forward_refs.py"), pfx + ".manifest"],
+                          capture_output=True, text=True)
+    if gate.returncode != 0:
+        sys.exit("error: forward-reference auto-order did not clear all FATAL edges:\n" + gate.stdout + gate.stderr)
+    print("    ✓ 0 fatal forward references remain")
+
+
 def cmd_mod_build_local(args) -> int:
     """Assemble a COMPLETE, loadable static mod locally from the running patch's overlay + the user's
     edits. EA-derived (rides the patch overlay's bytes) → local-only, never shareable."""
@@ -1413,6 +1452,10 @@ def cmd_mod_build_local(args) -> int:
 
         # 4. apply the overrides into the complete stream (shared engine with bake).
         cur = _apply_overrides(work, comp, stream, name, replace, insert, adopt_th)
+
+        # 4b. finding 0011: auto-order so a ProjectileNugget's projectile/warhead precede the weapon (else the
+        #     forward reference binds to null at load and the weapon silently won't launch). Re-checksums + gates.
+        _autoorder_forward_refs(cur, stream)
 
         # 5. pack the standalone LOCAL mod big with LOWERCASE archived names + `data\<family>.version`.
         #    IN-GAME FINDING (0016, control test 2026-11-24): a mod big that shadows the patch overlay with the
