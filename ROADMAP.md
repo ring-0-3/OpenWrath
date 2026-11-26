@@ -230,6 +230,18 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     `openwrath mod merge <modA> <modB> … → one overlay`, with per-asset clash detection.
   - ✅ `mod check` — pre-flight validation: dangling references + unknown fields / schema errors with `file:line`,
     plus per-type schema drift vs the target. Runs **automatically before a bake** (`--no-check` to skip).
+  - 📋 **stream explorer — list available streams, show which are LIVE, and search within one.** Today `find` searches
+    one (default) installed stream by name and there is no way to see what streams exist or which the engine actually
+    loads. Add: **(a) `openwrath streams`** — enumerate the stream families present across the game's `.big` archives
+    (`static_common` / `global_common` / `global_english` / … ) and mark **which are live** via the `.version` redirect
+    (`data\<family>.version` → base vs the `_mod` overlay — the live-stream mechanism from findings
+    [0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)/[0017](docs/findings/0017-overlay-mod-overrides-base-gameplay-the-complete-recipe.md),
+    so a user sees at a glance whether an overlay is active and which stream wins); **(b) `find --stream <name>`**
+    (and `inspect --stream`, already flagged in the diagnosability papercut below) — target a specific stream so you
+    can search within it rather than the default. **Reuse, don't re-derive:** `lib/bigextract.entries` (big contents),
+    the existing `.version` resolver (`_VERSION_POSTFIX` / the `<family>.version` reader in the build path), the
+    stream-name discovery already in `verify`, `lib/biglist.py`, and the `find` matcher — this is expose-and-wire, not
+    new format work.
   - 📋 base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
     streams (avoids C&C:Online / replay desync).
   - 📋 installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler binary, so
