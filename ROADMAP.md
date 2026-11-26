@@ -216,6 +216,41 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     path); the define-slicer (finding [0015]) doesn't always harvest them. Harvest/expand the base's defines.
     *Workaround used:* a self-contained **decompiled** full override (clean values, no base include) — works once
     its indentation is uniform (bug b).
+  - 📋 **Diagnosability / signposting papercuts — three hit during the 0011 commando re-investigation (2026-11-25).**
+    Each cost real time because the tool failed *opaquely* rather than pointing at the fix.
+    (a) **`inspect` desyncs on the installed stream with no fallback or hint.** `openwrath inspect GU_CMMNDO_SKL`
+    returned `<RawAsset … reason="desync: struct W3DHierarchy@0 len 12 past instance end (0)">` — looks like a
+    decompiler bug — yet the *same* asset decompiles byte-exact via `bab-decompile.dll decompile-stream` against the
+    clean `ea-roundtrip/eastream/static_common.manifest` + the right `--rm`/`--schema`. `inspect` should (i) print
+    *which* stream it read, (ii) on desync, suggest (or auto-fall-back to) the clean roundtrip stream, and (iii)
+    accept a `--stream`/`--rm` override so `inspect` can reach the base asset without hand-running the raw tool.
+    (b) **`mod bake` / `build-local` swallow the compiler's real error message.** A failed override compile printed
+    only `error: compile produced no stream for GDICommando.xml:` followed by a stack trace whose first line was
+    truncated mid-path (`aryAssetBuilder/Core/SageXml/DocumentProcessor.cs:line 360`) — the exception *Message* (the
+    actual cause) was cut off, and `-v` didn't surface it. Surface the compiler's exception Message + the offending
+    XML `file:line`, not a truncated stack tail.
+    (c) **No signpost that replacing an inherited module needs `xai:joinAction="Replace"`.** `mod add` scaffolds an
+    `inheritFrom` override commented "change an attribute or add a child element here", but adding a module whose
+    `id` already exists on the base (e.g. a `<ScriptedModelDraw id="ModuleTag_Draw">` to re-point a `WeaponLaunchBone`)
+    fails with the opaque error in (b). The join-action idiom (`="Replace"` to swap a module, `="Remove"` to drop
+    one) is undocumented in the scaffold. Mention it in the `mod add` comment and/or detect duplicate-module-id at
+    compile and suggest it. *Workaround used:* add `xai:joinAction="Replace"` to the overriding module — compiles clean.
+  - ✅ **Projectile-launch SOLVED + forward-reference tooling (finding
+    [0011](docs/findings/0011-hitscan-units-do-not-detonate-launched-projectiles.md), 2026-11-26).** A hitscan unit
+    *can* launch a projectile — the gate was **stream load-ORDER**, not "engine coupling": a `ProjectileNugget` binds
+    its projectile (GameObject) and warhead (WeaponTemplate) by **forward lookup at load**, so each must appear
+    **before** the weapon in the compiled manifest or it silently binds to null (projectile-order→spawn,
+    warhead-order→detonation; proven in-game on the GDI Commando *and* NOD Avatar). EA emits a topological
+    (dependencies-first) order (only 14/73,928 refs are forward, and all 10 EA ones are benign `→ Texture`). New tools:
+    `modkit/lib/reorder_stream.py` (lockstep reorder of manifest + `.bin/.relo/.imp`, relo/imp asset-local so safe;
+    then `retag_checksum.py`) and `modkit/lib/check_forward_refs.py` (lints a built stream — FATAL
+    `WeaponTemplate → GameObject/WeaponTemplate` forward edges, BENIGN `→ Texture`; exit 1 to gate a build).
+  - 📋 **Wire forward-ref safety into the build.** (a) Fold `check_forward_refs.py` into `openwrath mod check` so a
+    fatal forward edge fails pre-flight with the fix hint. (b) **Auto-ordering build pass**: when assembling the
+    overlay, topologically emit so a nugget's referenced projectile/warhead precede the weapon — so projectile mods
+    "just work" without manual `reorder_stream.py` surgery. (c) Grow the FATAL/BENIGN classifier as more
+    order-sensitive reference kinds are verified in-game (today only weapon→projectile/warhead is proven fatal,
+    →Texture proven benign; everything else is reported SUSPECT, not asserted).
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
 
