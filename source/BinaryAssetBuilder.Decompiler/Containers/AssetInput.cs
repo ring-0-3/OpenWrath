@@ -134,6 +134,25 @@ namespace BinaryAssetBuilder.Decompiler.Containers
             return sb.ToString();
         }
 
+        // Read a contiguous array of `count` little-endian uint16s at `offset` into a ushort[] (range-checked).
+        // The value-returning sibling of RenderUShortList (which renders a string); used by the semantic W3DMesh
+        // decode, which needs the Bones remap table as values to index, not as text. Kept here with the other raw
+        // readers so the raw-read spelling lives in one place (invariant 3).
+        public ushort[] ReadUShorts(uint offset, uint count)
+        {
+            if (count == 0)
+            {
+                return System.Array.Empty<ushort>();
+            }
+            CheckRange(offset, (long)count * 2, "ushort[]");
+            var r = new ushort[count];
+            for (uint i = 0; i < count; i++)
+            {
+                r[i] = BitConverter.ToUInt16(Instance, (int)(offset + i * 2));
+            }
+            return r;
+        }
+
         // Validate that [offset, offset+len) lies inside the instance; throw a labelled DesyncException if not.
         // Used before following a list/string/blob/pointer-array to a target region, so an implausible count or
         // offset becomes a clean desync rather than an out-of-bounds crash or a huge allocation.

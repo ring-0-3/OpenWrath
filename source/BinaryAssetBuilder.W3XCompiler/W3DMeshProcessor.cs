@@ -48,56 +48,9 @@ public struct XMHALF4
     public ushort W;
 }
 
-public enum VertexElementType : byte
-{
-    FLOAT1,
-    FLOAT2,
-    FLOAT3,
-    FLOAT4,
-    D3DCOLOR,
-    UBYTE4,
-    SHORT2,
-    SHORT4,
-    UBYTE4N,
-    SHORT2N,
-    SHORT4N,
-    USHORT2N,
-    USHORT4N,
-    UDEC3,
-    DEC3N,
-    FLOAT16_2,
-    FLOAT16_4,
-    UNUSED
-}
-
-public enum VertexElementMethod : byte
-{
-    DEFAULT,
-    PARTIALU,
-    PARTIALV,
-    CROSSUV,
-    UV,
-    LOOKUP,
-    LOOKUPPRESAMPLED
-}
-
-public enum VertexElementUsage : byte
-{
-    POSITION,
-    BLENDWEIGHT,
-    BLENDINDICES,
-    NORMAL,
-    PSIZE,
-    TEXCOORD,
-    TANGENT,
-    BINORMAL,
-    TESSFACTOR,
-    POSITIONT,
-    COLOR,
-    FOG,
-    DEPTH,
-    SAMPLE
-}
+// VertexElementType / VertexElementMethod / VertexElementUsage (the D3D9 declaration ABI codes) now live in
+// SageBinaryData (VertexDeclaration.cs) so the compiler packer and the decompiler's semantic decode share ONE
+// definition (CLAUDE.md invariant 3); resolved here via `using SageBinaryData;`.
 
 [StructLayout(LayoutKind.Sequential)]
 public struct D3DVertexElement9
@@ -464,8 +417,13 @@ internal class W3DMeshProcessor : IDisposable
             }
             if (mapping.UsageType == UsageType.BlendWeight && mapping.UsageIndex >= 1)
             {
+                // Each additional blend weight widens the SINGLE BlendWeight element's TYPE (FLOAT1->FLOAT2->...),
+                // keeping its Usage=BLENDWEIGHT — matching EA's shipped declaration (static_common 2-bone skins emit
+                // one FLOAT2 BLENDWEIGHT element for the two per-vertex weights; verified byte-exact, finding 0025).
+                // The data is already two adjacent FLOAT1s laid down by BuildVertexData, which IS a FLOAT2 element.
+                // (The prior code bumped Usage, producing a wrong declaration — size-exact yet byte-divergent.)
                 D3DVertexElement9 last = elements[^1];
-                last.Usage = (VertexElementUsage)((byte)last.Usage + 1);
+                last.Type = (VertexElementType)((byte)last.Type + 1);
                 elements[^1] = last;
                 continue;
             }

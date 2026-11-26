@@ -227,14 +227,20 @@ is earned by the current, BYO-clean pipeline — not by any edit to a bring-your
     validation reject), and the `AABTree` `**`-marshalers pushed a stack address (`&objT`→`objT`) → NRE. See 0018.
   - **Unmeasured:** only `static_common` is sampled; the big-endian / Xenon vertex path
     (`W3DMeshProcessor` `NotImplementedException`) is untouched.
-  - **The packer itself (`W3DMeshProcessor.BuildVertexData`) is UNVERIFIED.** The byte-exact result above proves
-    only the **pass-through** (shipped packed bytes in → same bytes out); it does **not** exercise the authoring
-    path that re-packs semantic vertices into the runtime form. That packer has dead half-float paths, a
-    `// TODO` `CompressNormalizedDirection`, and the Xenon stub — none oracle-checked. Authoring *new* geometry
-    (and any Blender exporter) depends on it, and is gated on a future **re-pack equality test** —
-    `semantic-decode ∘ W3DMeshProcessor == shipped bytes` — which would validate it against shipped bytes. Until
-    that test exists, re-packing is a **frontier (§4), not a verified capability**
-    ([blender-integration](../design/blender-integration.md)).
+  - **The packer `W3DMeshProcessor.BuildVertexData` is now VERIFIED (2026-11-26, finding
+    [0025](../findings/0025-w3dmesh-repack-equality-gate.md)).** The **re-pack equality gate** —
+    `semantic-decode ∘ W3DMeshProcessor == shipped bytes` — decodes a shipped mesh into authoring geometry and
+    recompiles it **through the real packer** (not pass-through): `tools/mesh-repack-gate.sh`, a reproducible
+    **stratified** seeded sample of **300/300 BYTEEXACT** (seed 42; all 20 distinct declaration layouts forced in).
+    The gate exposed and fixed three defects pass-through could never reach (a `BlendWeight` declaration bug, a
+    `private` `RGBAColor*` list marshaler that broke every non-white-colour mesh, and unreferenced-bone remap-table
+    reproduction). This validates the authoring path and makes a trustworthy Blender exporter **GO** for the
+    round-trip tier.
+  - **Packer paths still UNVERIFIED** (no shipped `static_common` instance hits them — honestly reported, never
+    greened): the half-float conversions (`FLOAT16_*` decl types), `CompressNormalizedDirection` (Windows copies
+    `FLOAT3` direct; this is a Xenon path), `BuildVertexDeclaration_Xenon` (`NotImplementedException`; big-endian),
+    `>2` blend weights (corpus max is `FLOAT2`), and zero-vertex / null `VertexData` (0 of corpus). New/authored
+    geometry remains the **stated** tier (§4) — never reported byte-exact.
 
 - **W3DContainer / W3DHierarchy / W3DCollisionBox — byte-exact via the ordinary pipeline (2026-11-25, finding
   [0019](../findings/0019-w3dcontainer-hierarchy-collisionbox-byte-exact-plain-pipeline.md)).** The connective

@@ -691,7 +691,11 @@ public static partial class Marshaler
         Marshal(node.GetAttributeValue(nameof(RGBColor.B), null), &objT->B, state);
     }
 
-    private static unsafe void Marshal(Node node, RGBAColor* objT, Tracker state)
+    // Public so the reflection-based List<T> element dispatch (Marshaler.List.cs, GetMethod with default
+    // public-only binding) can find it — authoring <VertexColors> is a List<RGBAColor>, the first path to marshal
+    // RGBAColor as a list element (finding 0025; mirrors the public Vector2*/Vector3* element marshalers). Private,
+    // it was invisible to that lookup -> "Cannot find marshal method for type 'RGBAColor*'".
+    public static unsafe void Marshal(Node node, RGBAColor* objT, Tracker state)
     {
         if (node is null)
         {

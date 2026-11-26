@@ -24,13 +24,15 @@ strength: finish what's decidable, then validate the keystone, then the frontier
    records-tractable + encoded-payload-pass-through split, like textures — shipped audio byte-exact, new audio
    stated-tier); widen coverage beyond `static_common`; close the **GameObject residual** (StringHashes coverage);
    generate + commit the `inputs.sha256` baseline (invariant 4). Keep the foundation honest.
-3. 📋 **The re-pack equality gate on `W3DMeshProcessor`** — the **keystone**. Decidable (decode a shipped mesh →
-   re-pack → byte-compare to shipped), so it fits the oracle, not a frontier leap. Validates the **currently
-   unverified** packer *and* is the precondition for both the Blender exporter and new-geometry authoring — highest
-   single-piece leverage. Design: [blender-integration](docs/design/blender-integration.md).
-4. 📋 **Semantic mesh decode** (packed vertex buffer → positions / normals / UVs / bone weights). Unlocks the Blender
-   **viewer** (the lower-risk half). The pass-through work already exposed the exact vertex layout, so this is bounded
-   engineering, not research.
+3. ✅ **The re-pack equality gate on `W3DMeshProcessor`** — the **keystone, DONE** (2026-11-26, finding
+   [0025](docs/findings/0025-w3dmesh-repack-equality-gate.md)). `semantic-decode ∘ W3DMeshProcessor == shipped`
+   verified **300/300 byte-exact** (stratified seeded sample, all 20 declaration layouts) via
+   `tools/mesh-repack-gate.sh`; the previously-unverified packer is now validated against shipped bytes, and the gate
+   exposed+fixed three latent defects. Blender exporter = **GO** for the round-trip tier (unexercised packer paths —
+   half-float / Xenon / >2 weights — remain honestly unverified).
+4. ✅ **Semantic mesh decode** (packed vertex buffer → positions / normals / UVs / bone influences) — **DONE** (0025):
+   `StructReader.ReadSemanticVertexData`, opt-in `bab-decompile --semantic-mesh`; pass-through stays default. Unlocks
+   the Blender **viewer**. Next: the Blender add-on proper (item 6), shelling out to this CLI.
 5. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
    path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
    modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.

@@ -17,14 +17,18 @@ namespace BinaryAssetBuilder.Decompiler
         private readonly Dictionary<string, Type> _enumsByName;
         private readonly ReferenceResolver _resolver;
         private readonly StringHashTable _strings;
+        // When true, W3DMesh geometry is emitted in semantic authoring form (editable; re-packs through
+        // BuildVertexData — the re-pack equality gate) instead of the default packed <VertexData> pass-through.
+        private readonly bool _semanticMesh;
 
         public AssetDecompiler(TypeRegistry registry, SchemaIndex schema = null, ReferenceResolver resolver = null,
-            StringHashTable strings = null)
+            StringHashTable strings = null, bool semanticMesh = false)
         {
             _registry = registry;
             _schema = schema;
             _resolver = resolver;
             _strings = strings;
+            _semanticMesh = semanticMesh;
             _enumsByName = BuildEnumIndex();
         }
 
@@ -75,7 +79,7 @@ namespace BinaryAssetBuilder.Decompiler
             }
             else
             {
-                new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings).ReadStruct(type, 0u, root);
+                new StructReader(asset, _registry, AssetNs, _schema, _enumsByName, _resolver, _strings, _semanticMesh).ReadStruct(type, 0u, root);
             }
         }
 

@@ -156,7 +156,8 @@ namespace BinaryAssetBuilder.Decompiler.Cli
             }
             ReferenceResolver resolver = ReferenceResolver.Build(refManifests);
             StringHashTable strings = StringHashTable.Load(stringHashesPath);
-            var dec = new AssetDecompiler(reg, schema, resolver, strings);
+            bool semanticMesh = HasFlag(args, "--semantic-mesh"); // emit editable W3DMesh geometry (re-pack gate)
+            var dec = new AssetDecompiler(reg, schema, resolver, strings, semanticMesh);
             XElement combinedRoot = combined != null ? new XElement(AssetDecompiler.AssetNs + "AssetDeclaration") : null;
 
             int ok = 0, skipped = 0, failed = 0;
@@ -269,7 +270,8 @@ namespace BinaryAssetBuilder.Decompiler.Cli
             }
             ReferenceResolver resolver = ReferenceResolver.Build(refManifests);
             StringHashTable strings = StringHashTable.Load(stringHashesPath);
-            var dec = new AssetDecompiler(reg, schema, resolver, strings);
+            bool semanticMesh = HasFlag(args, "--semantic-mesh"); // emit editable W3DMesh geometry (re-pack gate)
+            var dec = new AssetDecompiler(reg, schema, resolver, strings, semanticMesh);
             if (outdir != null) { Directory.CreateDirectory(outdir); }
 
             Console.WriteLine($"stream: {m.AssetCount} assets  (writing: {(outdir != null ? outdir : "tally-only")})");
@@ -373,5 +375,8 @@ namespace BinaryAssetBuilder.Decompiler.Cli
             }
             return null;
         }
+
+        // Presence-only flag (no value), e.g. --semantic-mesh.
+        private static bool HasFlag(string[] args, string name) => Array.IndexOf(args, name) >= 0;
     }
 }

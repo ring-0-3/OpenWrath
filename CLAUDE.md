@@ -100,6 +100,18 @@ re-encode) *only if it carries a lossy/typeless block* (anim's compressed channe
 **Plain structural types + particles use the ORDINARY pipeline** — register + hand-written/existing marshalers, the
 generic decompiler walk. Reaching for pass-through on a plain type is overfitting the previous answer (0019).
 
+**SOLVED — W3DMesh SEMANTIC decode + the re-pack equality gate (finding 0025, 2026-11-26 — do NOT re-derive).** The
+Blender keystone. Beyond pass-through, `StructReader.ReadSemanticVertexData` (opt-in `bab-decompile --semantic-mesh`)
+decodes the packed buffer into *editable* authoring geometry — the exact inverse of `W3DMeshProcessor`'s Windows
+conversions, driven by the D3D declaration. It re-packs through the REAL packer (no fork), and the gate
+`tools/mesh-repack-gate.sh` proved `decode ∘ BuildVertexData == shipped` **300/300 byte-exact** (stratified seed-42
+sample), so the packer is now VERIFIED. It exposed+fixed **2 latent bugs** (BlendWeight decl widened `Usage` not
+`Type`; a `private` `RGBAColor*` list marshaler broke every non-white `<VertexColors>` mesh) **plus a decoder
+accommodation** (a ghost `<BoneInfluences>` channel reproduces remap-table bones the written indices don't
+reference). Blender exporter = GO for the
+round-trip tier; unexercised packer paths (half-float / Xenon / >2 weights / zero-vertex) stay honestly unverified;
+new/authored geometry is stated-tier.
+
 **Reuse map (do NOT re-derive — invariant 3):** schema reach is added **in code**, never a BYO `.xsd` edit
 (`SchemaSet.BindRuntimeAnimationChannels` / `AugmentRuntimeMeshVertexData`, finding 0014); shared decompiler
 renderers live on `AssetInput` (`RenderUShortList`, `ReadBlobBase64`) — call them, don't copy; the **reference-choice**

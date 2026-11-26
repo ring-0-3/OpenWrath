@@ -7,6 +7,11 @@ using System.Text;
 using System.Xml.Linq;
 using BinaryAssetBuilder.Decompiler.Containers;
 using Relo;
+// The shared D3D9 vertex-declaration ABI codes (single source of truth in SageBinaryData) — the semantic mesh
+// decode reads the same enums the W3X compiler packer writes (CLAUDE.md invariant 3). Aliased to avoid pulling the
+// whole SageBinaryData namespace (which would collide with Relo.List<> etc.).
+using VUsage = SageBinaryData.VertexElementUsage;
+using VType = SageBinaryData.VertexElementType;
 
 namespace BinaryAssetBuilder.Decompiler
 {
@@ -24,10 +29,16 @@ namespace BinaryAssetBuilder.Decompiler
         private readonly System.Collections.Generic.IReadOnlyDictionary<string, Type> _enumsByName;
         private readonly ReferenceResolver _resolver;
         private readonly StringHashTable _strings;
+        // Opt-in: emit a W3DMesh's geometry in SEMANTIC authoring form (<Vertices>/<Normals>/<TexCoords>/
+        // <BoneInfluences>/...) instead of the default packed-passthrough <VertexData> base64. Semantic form is
+        // editable (the Blender import tier) and, crucially, recompiles THROUGH W3DMeshProcessor.BuildVertexData
+        // (IsRuntimeMesh=false when <Vertices> present and <VertexData> absent) — the re-pack equality gate
+        // (finding 0025). Pass-through stays the default so shipped assets still round-trip byte-exact unchanged.
+        private readonly bool _semanticMesh;
 
         public StructReader(AssetInput asset, TypeRegistry registry, XNamespace ns,
             SchemaIndex schema, System.Collections.Generic.IReadOnlyDictionary<string, Type> enumsByName,
-            ReferenceResolver resolver, StringHashTable strings)
+            ReferenceResolver resolver, StringHashTable strings, bool semanticMesh = false)
         {
             _asset = asset;
             _registry = registry;
@@ -36,6 +47,7 @@ namespace BinaryAssetBuilder.Decompiler
             _enumsByName = enumsByName;
             _resolver = resolver;
             _strings = strings;
+            _semanticMesh = semanticMesh;
         }
 
         // A pending AssetReference attribute and its recorded import index, so we can order references within an
@@ -256,7 +268,14 @@ namespace BinaryAssetBuilder.Decompiler
             //     form; the compiler writes it straight back (Marshaler.W3DMeshRuntime), byte-exact. ---
             if (fi.DeclaringType == typeof(SageBinaryData.W3DMeshMarshalerHelper) && name == "VertexData")
             {
-                ReadRuntimeVertexData(off, target);
+                if (_semanticMesh)
+                {
+                    ReadSemanticVertexData(off, target);
+                }
+                else
+                {
+                    ReadRuntimeVertexData(off, target);
+                }
                 return;
             }
 
@@ -690,6 +709,255 @@ namespace BinaryAssetBuilder.Decompiler
         // is {Data ptr @off, Size uint @off+4}; dataOff is the relocated on-disk offset of the DDS bytes. A null
         // pointer / zero size emits nothing (defensive — every shipped Texture carries a DDS payload). Reuses
         // ReadBlobBase64 (the shared W3DMesh blob reader) rather than re-deriving the base64 render.
+        private readonly struct DeclElement
+        {
+            public readonly int Offset, UsageIndex;
+            public readonly VType Type;
+            public readonly VUsage Usage;
+            public DeclElement(int off, VType type, VUsage usage, int uidx) { Offset = off; Type = type; Usage = usage; UsageIndex = uidx; }
+        }
+
+        // Decode a shipped W3DMesh's packed W3DMeshVertexData into SEMANTIC authoring geometry — the exact inverse
+        // of W3DMeshProcessor.BuildVertexData's Windows path. Driven ENTIRELY by the D3D vertex declaration that
+        // travels with the mesh (element usage/type/offset): it is input-derived, never output-pattern-matched.
+        // Emits the same <Vertices>/<Normals>/<Tangents>/<Binormals>/<VertexColors>/<TexCoords>/<BoneInfluences>
+        // tags EA's authoring source carried, so the compiler re-packs them through BuildVertexData (the re-pack
+        // equality gate, finding 0025). The inverse conversions, element-by-element:
+        //   POSITION/NORMAL/TANGENT/BINORMAL  FLOAT3  -> Vector3 verbatim (BuildVertexData CopyDirect<Vector3>)
+        //   TEXCOORD                          FLOAT2  -> (X, 1-Y): undo CopyTexCoord's V-flip (destV = 1 - srcV)
+        //   COLOR                             D3DCOLOR-> RGBA bytes/255; all-white (0xFFFFFFFF) => omit
+        //                                               <VertexColors> entirely (BuildVertexData synthesises a
+        //                                               default-white colour when none is authored — the ONLY lossy
+        //                                               field; an authored white and no-colour are indistinguishable
+        //                                               and re-pack identically, so omitting is byte-safe).
+        //   BLENDINDICES                      D3DCOLOR-> `num` packed bytes, each an index into the Bones remap
+        //                                               table -> original bone id (undo ConvertBlendIndex).
+        //   BLENDWEIGHT                       FLOATn  -> n per-influence weights (undo CopyDirect<float> x n).
+        // `num` (bone-influence channels) = weight-component-count when a BLENDWEIGHT element is present, else 1
+        // (BuildVertexData emits BlendWeight only when num>1), matching DetermineVertexDataContents.
+        private void ReadSemanticVertexData(uint off, XElement target)
+        {
+            if (!_asset.ReloFroms.Contains(off))
+            {
+                return; // null VertexData pointer -> no geometry (compiler reproduces the null; defensive, 0018)
+            }
+            uint to = _asset.ReadSlot(off);
+            _asset.CheckRange(to, 28, "W3DMeshVertexData header");
+            int numVertices = (int)_asset.ReadSlot(to);
+            uint stride = _asset.ReadSlot(to + 4);
+            uint vedOff = _asset.ReadSlot(to + 8);
+            uint vdCount = _asset.ReadSlot(to + 12);
+            uint vdOff = _asset.ReadSlot(to + 16);
+            uint bonesCount = _asset.ReadSlot(to + 20);
+            uint bonesOff = _asset.ReadSlot(to + 24);
+
+            _asset.CheckRange(vdOff, vdCount, "W3DMesh VertexDeclaration");
+            _asset.CheckRange(vedOff, (long)numVertices * stride, "W3DMesh VertexElementData");
+
+            // Parse the D3D vertex declaration: 8-byte D3DVERTEXELEMENT9 {short Stream; short Offset; byte Type;
+            // byte Method; byte Usage; byte UsageIndex}, terminated by Stream==0xFF (Type==UNUSED).
+            var elems = new System.Collections.Generic.List<DeclElement>();
+            for (uint i = 0; i + 8 <= vdCount; i += 8)
+            {
+                uint eo = vdOff + i;
+                ushort stream = BitConverter.ToUInt16(_asset.Instance, (int)eo);
+                if (stream == 0xFF)
+                {
+                    break;
+                }
+                short elemOff = BitConverter.ToInt16(_asset.Instance, (int)eo + 2);
+                var type = (VType)_asset.Instance[eo + 4];
+                var usage = (VUsage)_asset.Instance[eo + 6];
+                int usageIndex = _asset.Instance[eo + 7];
+                if (type == VType.UNUSED)
+                {
+                    break;
+                }
+                elems.Add(new DeclElement(elemOff, type, usage, usageIndex));
+            }
+
+            var positions = elems.Where(e => e.Usage == VUsage.POSITION).OrderBy(e => e.UsageIndex).ToList();
+            var normals = elems.Where(e => e.Usage == VUsage.NORMAL).OrderBy(e => e.UsageIndex).ToList();
+            DeclElement? tangent = elems.Where(e => e.Usage == VUsage.TANGENT).Select(e => (DeclElement?)e).FirstOrDefault();
+            DeclElement? binormal = elems.Where(e => e.Usage == VUsage.BINORMAL).Select(e => (DeclElement?)e).FirstOrDefault();
+            DeclElement? color = elems.Where(e => e.Usage == VUsage.COLOR).Select(e => (DeclElement?)e).FirstOrDefault();
+            var texcoords = elems.Where(e => e.Usage == VUsage.TEXCOORD).OrderBy(e => e.UsageIndex).ToList();
+            DeclElement? blendIdx = elems.Where(e => e.Usage == VUsage.BLENDINDICES).Select(e => (DeclElement?)e).FirstOrDefault();
+            DeclElement? blendWt = elems.Where(e => e.Usage == VUsage.BLENDWEIGHT).Select(e => (DeclElement?)e).FirstOrDefault();
+
+            // All structural elements the Windows packer produces are FLOAT3/FLOAT2/D3DCOLOR; any other decl type is
+            // a path static_common never uses (half-float, Xenon). Refuse rather than mis-decode (honest coverage).
+            foreach (DeclElement e in elems)
+            {
+                bool ok =
+                    ((e.Usage == VUsage.POSITION || e.Usage == VUsage.NORMAL || e.Usage == VUsage.TANGENT || e.Usage == VUsage.BINORMAL) && e.Type == VType.FLOAT3)
+                    || (e.Usage == VUsage.TEXCOORD && e.Type == VType.FLOAT2)
+                    || (e.Usage == VUsage.COLOR && e.Type == VType.D3DCOLOR)
+                    || (e.Usage == VUsage.BLENDINDICES && e.Type == VType.D3DCOLOR)
+                    || (e.Usage == VUsage.BLENDWEIGHT && e.Type >= VType.FLOAT1 && e.Type <= VType.FLOAT4);
+                if (!ok)
+                {
+                    throw new NotSupportedException(
+                        $"W3DMesh semantic decode: unsupported vertex element usage={e.Usage} type={e.Type} " +
+                        "(not in the shipped little-endian FLOAT/D3DCOLOR set) — mesh left to raw fallback.");
+                }
+            }
+
+            // Bone-influence channel count: FLOAT{n} weight element => n channels; a bare BLENDINDICES => 1.
+            int num = 0;
+            if (blendIdx is not null)
+            {
+                num = blendWt is not null ? (blendWt.Value.Type - VType.FLOAT1 + 1) : 1;
+            }
+            ushort[] bones = _asset.ReadUShorts(bonesOff, bonesCount);
+
+            float ReadF(int vtx, int elemOffset, int comp) =>
+                BitConverter.ToSingle(_asset.Instance, (int)(vedOff + (uint)vtx * stride) + elemOffset + comp * 4);
+
+            // ---- positions (1-2 channels) ----
+            for (int ch = 0; ch < positions.Count; ch++)
+            {
+                var vs = new XElement(_ns + "Vertices");
+                int o = positions[ch].Offset;
+                for (int v = 0; v < numVertices; v++)
+                {
+                    vs.Add(Vec3(_ns + "V", ReadF(v, o, 0), ReadF(v, o, 1), ReadF(v, o, 2)));
+                }
+                target.Add(vs);
+            }
+            // ---- normals (0-2 channels) ----
+            for (int ch = 0; ch < normals.Count; ch++)
+            {
+                var ns = new XElement(_ns + "Normals");
+                int o = normals[ch].Offset;
+                for (int v = 0; v < numVertices; v++)
+                {
+                    ns.Add(Vec3(_ns + "N", ReadF(v, o, 0), ReadF(v, o, 1), ReadF(v, o, 2)));
+                }
+                target.Add(ns);
+            }
+            // ---- tangents / binormals (BuildVertexData emits both-or-neither) ----
+            if (tangent is not null)
+            {
+                var te = new XElement(_ns + "Tangents");
+                int o = tangent.Value.Offset;
+                for (int v = 0; v < numVertices; v++) te.Add(Vec3(_ns + "T", ReadF(v, o, 0), ReadF(v, o, 1), ReadF(v, o, 2)));
+                target.Add(te);
+            }
+            if (binormal is not null)
+            {
+                var be = new XElement(_ns + "Binormals");
+                int o = binormal.Value.Offset;
+                for (int v = 0; v < numVertices; v++) be.Add(Vec3(_ns + "B", ReadF(v, o, 0), ReadF(v, o, 1), ReadF(v, o, 2)));
+                target.Add(be);
+            }
+            // ---- vertex colours: emit only if some vertex is non-white (else the packer's default-white matches) ----
+            if (color is not null)
+            {
+                int o = color.Value.Offset;
+                bool anyNonWhite = false;
+                for (int v = 0; v < numVertices && !anyNonWhite; v++)
+                {
+                    if (BitConverter.ToUInt32(_asset.Instance, (int)(vedOff + (uint)v * stride) + o) != 0xFFFFFFFFu)
+                    {
+                        anyNonWhite = true;
+                    }
+                }
+                if (anyNonWhite)
+                {
+                    var vc = new XElement(_ns + "VertexColors");
+                    for (int v = 0; v < numVertices; v++)
+                    {
+                        uint c = BitConverter.ToUInt32(_asset.Instance, (int)(vedOff + (uint)v * stride) + o); // 0xAARRGGBB
+                        var ce = new XElement(_ns + "C");
+                        // Vector4ToD3DCOLOR packed W,X,Y,Z -> A,R,G,B; invert with byte/255 (verified exact for 0..255).
+                        ce.SetAttributeValue("R", RenderFloat(((c >> 16) & 0xFF) / 255f));
+                        ce.SetAttributeValue("G", RenderFloat(((c >> 8) & 0xFF) / 255f));
+                        ce.SetAttributeValue("B", RenderFloat((c & 0xFF) / 255f));
+                        ce.SetAttributeValue("A", RenderFloat(((c >> 24) & 0xFF) / 255f));
+                        vc.Add(ce);
+                    }
+                    target.Add(vc);
+                }
+            }
+            // ---- texture coordinates (1+ channels), undoing the V-flip ----
+            for (int ch = 0; ch < texcoords.Count; ch++)
+            {
+                var tc = new XElement(_ns + "TexCoords");
+                int o = texcoords[ch].Offset;
+                for (int v = 0; v < numVertices; v++)
+                {
+                    var t = new XElement(_ns + "T");
+                    t.SetAttributeValue("X", RenderFloat(ReadF(v, o, 0)));
+                    t.SetAttributeValue("Y", RenderFloat(1.0f - ReadF(v, o, 1)));
+                    tc.Add(t);
+                }
+                target.Add(tc);
+            }
+            // ---- bone influences: `num` channels; each vertex an index byte (-> bones[idx]) + its weight ----
+            if (num > 0)
+            {
+                int bio = blendIdx.Value.Offset;
+                int bwo = blendWt?.Offset ?? 0;
+                var referenced = new System.Collections.Generic.HashSet<ushort>();
+                for (int ch = 0; ch < num; ch++)
+                {
+                    var bi = new XElement(_ns + "BoneInfluences");
+                    for (int v = 0; v < numVertices; v++)
+                    {
+                        int idx = _asset.Instance[(int)(vedOff + (uint)v * stride) + bio + ch];
+                        if (idx >= bones.Length)
+                        {
+                            throw new NotSupportedException($"W3DMesh semantic decode: bone index {idx} out of remap table ({bones.Length}).");
+                        }
+                        referenced.Add(bones[idx]);
+                        // Weight is only re-packed when num>1 (FLOAT{n} present); for a single rigid influence the
+                        // packer never reads it, so a nominal 1.0 is byte-safe and viewer-sane.
+                        float w = blendWt is not null ? ReadF(v, bwo, ch) : 1.0f;
+                        var inf = new XElement(_ns + "I");
+                        inf.SetAttributeValue("Weight", RenderFloat(w));
+                        inf.SetAttributeValue("Bone", bones[idx].ToString(CultureInfo.InvariantCulture));
+                        bi.Add(inf);
+                    }
+                    target.Add(bi);
+                }
+                // The remap table (Bones) can list bones the WRITTEN channels never reference: when a mesh was
+                // authored with more influence channels than `num = min(Vertices.Count, BoneInfluences.Count)`,
+                // BuildVertexData writes only `num` blend indices but ComputeBoneMappingTable still folds EVERY
+                // channel's bones into the table. Those extra bones are real (they are in the shipped buffer I just
+                // read) but their per-vertex assignment/weight is dropped by the packer and unrecoverable. To
+                // reproduce the table byte-exact, emit one extra BoneInfluences channel covering the full table:
+                // ComputeBoneMappingTable re-derives the SAME sorted set, so every written blend index re-packs
+                // exactly. It is BEYOND `num` (index == num), so BuildVertexData never writes it to the buffer or
+                // weights and `num` is unchanged — only the table is affected. Guarded to num==positions.Count so
+                // the added channel cannot raise min(Vertices.Count, BoneInfluences.Count). (The dropped secondary
+                // influence is a genuine decode loss — stated tier for a viewer; finding 0025.)
+                bool fullyReferenced = referenced.Count == bones.Length;
+                // numVertices >= bones.Length guarantees the cycling ghost covers every table entry in one channel.
+                if (!fullyReferenced && num == positions.Count && numVertices >= bones.Length)
+                {
+                    var ghost = new XElement(_ns + "BoneInfluences");
+                    for (int v = 0; v < numVertices; v++)
+                    {
+                        var inf = new XElement(_ns + "I");
+                        inf.SetAttributeValue("Weight", RenderFloat(0.0f));
+                        inf.SetAttributeValue("Bone", bones[v % bones.Length].ToString(CultureInfo.InvariantCulture));
+                        ghost.Add(inf);
+                    }
+                    target.Add(ghost);
+                }
+            }
+        }
+
+        private XElement Vec3(XName name, float x, float y, float z)
+        {
+            var e = new XElement(name);
+            e.SetAttributeValue("X", RenderFloat(x));
+            e.SetAttributeValue("Y", RenderFloat(y));
+            e.SetAttributeValue("Z", RenderFloat(z));
+            return e;
+        }
+
         private void ReadTexturePayload(uint off, XElement target)
         {
             uint dataOff = _asset.ReadSlot(off);
