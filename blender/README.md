@@ -150,6 +150,9 @@ by hand:
          Pose mode — the right geometry follows).
    - [ ] **UVs**: open the UV editor — islands are laid out in 0..1, not flipped vertically
          (the decoder already un-flips V; verify the direction once against a textured ref).
+   - [ ] **Textures**: in Material Preview / Rendered shading the unit shows its real diffuse
+         skin (not flat grey); the import report lists how many meshes were textured vs fell
+         back to the placeholder (OnDemand / unresolved slots).
    - [ ] **Assembly**: the whole model is coherent (rigid parts in place, skinned legs/body
          present and upright) — not scattered or collapsed to the origin.
    - [ ] **Collision boxes** (enable the import toggle — OFF by default) appear as wire-cube
@@ -170,10 +173,18 @@ by hand:
   the bind pose correctly (verified: the Redeemer's four legs come out symmetric; the seam gate
   below passes), but a handful of genuine soft-blend vertices still sit a few units off at a bone
   seam — a known **stated-tier residual**, reported (bucketed) by the gate, never called exact.
-- **No textures/materials — UNTEXTURED.** Every mesh gets a single neutral grey placeholder
-  material so the no-texture state is obvious; the import report says how many meshes imported
-  untextured. `FXShaderMaterial`/DDS are not mapped. (DDS *display* could be added read-only
-  later; DDS *encoding* is the frontier tier and out of scope.)
+- **Base-color textures: mapped (milestone 2 + 1.5, finding 0027).** Each mesh's `<FXShader>`
+  base-color slot — chosen by the ordered precedence `DiffuseTexture > Texture_0` (object shaders
+  vs the effect/muzzle shaders' base map; a named constant, not a per-shader special-case) — is
+  resolved to its `Texture` asset, whose `<Payload>` (a literal D3D9 DDS, finding 0024) is
+  base64-decoded to a `.dds` and loaded with **Blender's native image loader** (no DDS/DXT decoder
+  is forked into the add-on). It drives Base Color, UV-mapped, and the report names the slot used
+  per mesh. A slot that is an `OnDemandTexture` (streamed, no payload), doesn't resolve, or a
+  shader with no base-color slot falls back to the grey placeholder and is **reported** (never a
+  crash, never fabricated pixels). The DDS payload's validity is **byte-decidable** (asserted in
+  `tests/test_textures.py`); the material/scene *look* is **stated-tier** (no byte oracle).
+  `NormalMap`/`SpecMap`/`Texture_1` and full `FXShaderMaterial` semantics are not wired yet;
+  *encoding* new DDS is the frontier tier.
 - **No exporter.** Read-only. Export is staging step 3, gated on the re-pack equality gate
   (`tools/mesh-repack-gate.sh`), a separate milestone.
 - **Coordinate convention is passed through verbatim** (no axis remap applied). If models

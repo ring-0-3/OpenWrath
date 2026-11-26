@@ -13,11 +13,15 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDER_DIR="$(dirname "$HERE")"
 
-echo "== [1/2] parser tests (system python) =="
+echo "== [1/3] parser tests (system python) =="
 python3 "$HERE/test_parser.py"
 
 echo
-echo "== [2/2] self-consistency gate (Blender) =="
+echo "== [2/3] texture decidable-anchor tests (system python) =="
+python3 "$HERE/test_textures.py"
+
+echo
+echo "== [3/3] self-consistency gate (Blender) =="
 if command -v blender >/dev/null 2>&1; then
   blender --background --python "$HERE/test_self_consistency.py"
 else

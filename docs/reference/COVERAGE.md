@@ -359,6 +359,18 @@ Its decode geometry is bit-exact to the CLI (self-consistency gate), but scene *
   gate** that FAILS the old max-weight-bone tears (gaps 10–15u) — but a few genuine soft-blend vertices
   still sit ≤ a few units off at a bone seam. These are **bucketed + reported** by the gate, never called
   exact. Live skeletal deformation / animation is a later tier.
+- **Base-color textures: mapped (milestone 2 + 1.5, finding [0027](../findings/0027-blender-viewer-textured-diffuse.md)).**
+  A mesh's `<FXShader>` base-color slot — chosen by an ordered precedence `DiffuseTexture > Texture_0` (object
+  shaders vs the effect/muzzle shaders' base map), never a per-shader special-case — is resolved to its `Texture`
+  record; the shipped `<Payload>` (a literal D3D9 DDS, finding 0024) is base64-decoded and loaded by **Blender's
+  native image loader** (no DDS decoder forked into the add-on) onto Base Color, UV-mapped. **Byte-decidable
+  sub-anchors:** the FXShader names parse deterministically (incl. the real `REDEEMER_TOP` and the `Texture_0`
+  fallback `FX_LAZERGLOW → FXMuzzle`), and each payload base64-decodes to a valid D3D9 DDS header (asserted in
+  `blender/tests/test_textures.py`; 18 real local payloads validated). **In-GUI confirmed** on the real NOD
+  Redeemer (34/34 meshes textured). **Stated** (no byte oracle): the material/scene *look*. **Honest gaps:** an
+  `OnDemandTexture` slot (no payload) / unresolved name / a genuinely textureless shader (`no_basemap`) falls back
+  to the grey placeholder and is reported, never crashed/fabricated; `NormalMap`/`SpecMap`/`Texture_1` and full
+  `FXShaderMaterial` semantics are not wired; *encoding* new DDS is the §4 frontier.
 
 ## Known decompiler (read-direction) limitations
 

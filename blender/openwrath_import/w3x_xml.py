@@ -38,6 +38,73 @@ ASSET_NS = "uri:ea.com:eala:asset"
 Vec3 = tuple[float, float, float]
 
 
+# Ordered base-color texture slots, highest precedence first. ONLY these feed Base Color:
+# standard object shaders name their albedo `DiffuseTexture`; the effect/muzzle shaders
+# (MuzzleFlash.fx family) carry their base map in `Texture_0` instead. NormalMap / SpecMap /
+# ScrollingMaskTexture / Bump* are NOT colour maps and must never land on Base Color — they
+# are deliberately absent from this list. Extending the viewer to a new base-color slot is a
+# one-line addition here, keeping the precedence auditable in a single named place.
+BASE_COLOR_SLOTS = ("DiffuseTexture", "Texture_0")
+
+
+@dataclass
+class ShaderTextures:
+    """The texture-slot references out of a mesh's ``<FXShader>`` block.
+
+    ``textures`` maps the slot name exactly as authored (``"DiffuseTexture"``,
+    ``"Texture_0"``, ``"NormalMap"``, ``"SpecMap"``, ``"ScrollingMaskTexture"``, …) to the
+    referenced ``Texture`` / ``OnDemandTexture`` **asset name** — NOT a file. Resolving that
+    name to an actual asset (and its DDS payload) is the CLI's job; this is pure XML shape.
+    """
+
+    shader_name: str = ""
+    textures: dict[str, str] = field(default_factory=dict)
+
+    def base_color(self) -> tuple[Optional[str], Optional[str]]:
+        """``(slot_name, texture_asset_name)`` for the first base-color slot this shader
+        actually has, by :data:`BASE_COLOR_SLOTS` precedence; ``(None, None)`` if none.
+
+        ``(None, None)`` is the legitimate textureless case (a shader whose constants expose
+        no base-color map) — the caller keeps the placeholder for it. Note the base-color slot
+        is decided by the constants present, NOT by shader name: a ``DefaultW3D.fx`` mesh may
+        still carry a ``Texture_0`` base map (and is textured), so never gate on the ``.fx``."""
+        for slot in BASE_COLOR_SLOTS:
+            name = self.textures.get(slot)
+            if name:
+                return slot, name
+        return None, None
+
+    @property
+    def diffuse(self) -> Optional[str]:
+        """The ``DiffuseTexture`` slot specifically (standard object shaders). For picking
+        the material's base colour across shader families, prefer :meth:`base_color`."""
+        return self.textures.get("DiffuseTexture")
+
+    @property
+    def normal(self) -> Optional[str]:
+        return self.textures.get("NormalMap")
+
+    @property
+    def spec(self) -> Optional[str]:
+        return self.textures.get("SpecMap")
+
+
+@dataclass
+class TextureAsset:
+    """A decompiled ``Texture`` / ``OnDemandTexture`` asset (finding 0024).
+
+    A shipped ``Texture`` carries a ``<Payload>`` base64 element that is a *literal
+    complete D3D9 .dds file* (``StructReader.ReadTexturePayload``); decoding it back to
+    bytes is just a base64 decode — no DXT work lives here (CLAUDE.md invariant 3). An
+    ``OnDemandTexture`` carries **no** payload (its pixels are streamed on demand / live
+    as a loose file), so ``payload_b64`` is ``None`` and ``is_ondemand`` is ``True``.
+    """
+
+    name: str
+    is_ondemand: bool
+    payload_b64: Optional[str] = None
+
+
 @dataclass
 class MeshGeometry:
     """One shipped ``W3DMesh``, decoded to editable per-vertex attributes.
@@ -63,6 +130,8 @@ class MeshGeometry:
     influences: list[list[tuple[int, float]]] = field(default_factory=list)
     # Triangle faces as (v0, v1, v2) indices into the primary position channel.
     triangles: list[tuple[int, int, int]] = field(default_factory=list)
+    # The FXShader texture-slot references, or None when the mesh carries no <FXShader>.
+    shader: Optional[ShaderTextures] = None
 
     @property
     def positions(self) -> list[Vec3]:
@@ -251,6 +320,30 @@ def parse_mesh(path: str) -> MeshGeometry:
             if len(idx) == 3:
                 triangles.append((idx[0], idx[1], idx[2]))
 
+    # FXShader texture slots. Shape (confirmed against the decompiled producer):
+    #   <FXShader ShaderName="ObjectsNOD.fx" ...>
+    #     <Constants>
+    #       <Texture Name="DiffuseTexture"><Value>NURedeemer</Value></Texture>
+    #       <Texture Name="NormalMap"><Value>NURedeemer_NRM</Value></Texture>
+    #       <Float .../> <Bool .../>            (non-texture constants: ignored here)
+    #     </Constants>
+    #   </FXShader>
+    # Only <Texture> constants carry a texture-asset reference; an empty <Value> (an
+    # unassigned slot) is dropped so a caller never resolves "".
+    shader = None
+    fx = _child(el, "FXShader")
+    if fx is not None:
+        tex_map: dict[str, str] = {}
+        consts = _child(fx, "Constants")
+        if consts is not None:
+            for t in _children(consts, "Texture"):
+                slot = t.get("Name")
+                ve = _child(t, "Value")
+                val = (ve.text or "").strip() if ve is not None else ""
+                if slot and val:
+                    tex_map[slot] = val
+        shader = ShaderTextures(shader_name=fx.get("ShaderName", ""), textures=tex_map)
+
     return MeshGeometry(
         name=name,
         vertex_count=vcount,
@@ -262,6 +355,29 @@ def parse_mesh(path: str) -> MeshGeometry:
         colors=colors,
         influences=influences,
         triangles=triangles,
+        shader=shader,
+    )
+
+
+def parse_texture(path: str) -> TextureAsset:
+    """Parse a decompiled ``Texture`` / ``OnDemandTexture`` asset (finding 0024).
+
+    The ``<Payload>`` text (when present) is a base64-encoded literal D3D9 .dds file;
+    this returns it verbatim — base64 decoding + header validation live in
+    :mod:`openwrath_import.dds` (no pixel decoder is forked into the add-on, invariant 3).
+    """
+    el = _asset_root(path)
+    tag = _local(el.tag)
+    if tag not in ("Texture", "OnDemandTexture"):
+        raise ValueError(f"{path}: not a Texture/OnDemandTexture (<{tag}>)")
+    payload = None
+    pe = _child(el, "Payload")
+    if pe is not None:
+        payload = (pe.text or "").strip() or None
+    return TextureAsset(
+        name=el.get("id", "texture"),
+        is_ondemand=(tag == "OnDemandTexture"),
+        payload_b64=payload,
     )
 
 

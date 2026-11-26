@@ -29,8 +29,9 @@ import tempfile
 if "w3x_xml" in locals():  # support Blender's "Reload Scripts"
     importlib.reload(w3x_xml)  # noqa: F821
     importlib.reload(cli)      # noqa: F821
+    importlib.reload(dds)      # noqa: F821
 else:
-    from . import w3x_xml, cli
+    from . import w3x_xml, cli, dds
 
 
 def _sb():
@@ -90,6 +91,85 @@ class AssetResolver:
 
 
 # --------------------------------------------------------------------------- #
+# Base-color texture resolution (finding 0024 pass-through + the DDS decidable anchor)
+# --------------------------------------------------------------------------- #
+
+def _resolve_texture(resolver, name):
+    """Resolve a texture asset NAME to a parsed :class:`w3x_xml.TextureAsset`, or None.
+
+    One ``resolver.resolve`` call finds whichever record type exists next to the import
+    file — ``Texture.<name>.xml`` directly, or ``OnDemandTexture.<name>.xml`` via the
+    resolver's ``*.<name>.xml`` glob — and :func:`w3x_xml.parse_texture` detects which it
+    is. Never raises: a missing/undecodable texture returns None (→ placeholder + report),
+    so one bad slot never aborts the import."""
+    try:
+        path = resolver.resolve(name, type_hint="Texture")
+    except Exception:
+        return None
+    try:
+        return w3x_xml.parse_texture(path)
+    except Exception:
+        return None
+
+
+def _base_color_material_for(sb, mesh, resolver, out_dir, report):
+    """Return ``(material_or_None, status)`` for a mesh's **base-color** texture slot.
+
+    The slot is chosen by :data:`w3x_xml.BASE_COLOR_SLOTS` precedence (``DiffuseTexture``
+    for object shaders, ``Texture_0`` for the effect/muzzle shaders) — never a per-shader
+    special-case. ``status`` is one of ``textured`` / ``no_shader`` (no ``<FXShader>`` at
+    all) / ``no_basemap`` (an ``<FXShader>`` whose constants expose no base-color slot —
+    correctly left on the placeholder) / ``ondemand`` / ``unresolved`` /
+    ``invalid`` — the honest bucket, reported and counted, never a silent drop. The DDS
+    payload is byte-exact (finding 0024), so "decodes to a valid DDS" is a byte-DECIDABLE
+    gate (:mod:`openwrath_import.dds`); only a slot that passes it gets a real material.
+    """
+    import os
+
+    sh = getattr(mesh, "shader", None)
+    if not sh:
+        return None, "no_shader"
+    slot, name = sh.base_color()
+    if not name:
+        # Has an <FXShader> but no base-color slot (its constants expose only numeric params
+        # / non-base-color maps). Textureless BY DESIGN, not a miss — keep the placeholder,
+        # report accurately. (Shader name is NOT a proxy for this: a DefaultW3D.fx mesh may
+        # or may not carry a Texture_0 base map — decided per mesh by base_color(), not by .fx.)
+        report(f"note: shader '{sh.shader_name}' has no base-color texture slot "
+               f"(base-color slots: {', '.join(w3x_xml.BASE_COLOR_SLOTS)}) — using placeholder.")
+        return None, "no_basemap"
+
+    tex = _resolve_texture(resolver, name)
+    if tex is None:
+        report(f"note: base-color texture '{name}' (<{slot}>) did not resolve in the sampled "
+               f"stream — using placeholder.")
+        return None, "unresolved"
+    if tex.is_ondemand or not tex.payload_b64:
+        report(f"note: base-color texture '{name}' (<{slot}>) is an OnDemandTexture (pixels "
+               f"streamed on demand / loose file — no payload in the stream) — using placeholder.")
+        return None, "ondemand"
+
+    data, info = dds.decode_and_probe(tex.payload_b64)
+    if data is None or not info.valid:
+        report(f"WARNING: base-color texture '{name}' (<{slot}>) payload is not a valid DDS "
+               f"({info.reason}) — using placeholder.")
+        return None, "invalid"
+
+    dds_path = os.path.join(out_dir, name + ".dds")
+    try:
+        with open(dds_path, "wb") as fh:
+            fh.write(data)
+    except OSError as e:
+        report(f"WARNING: could not write decoded DDS for '{name}' ({e}) — using placeholder.")
+        return None, "invalid"
+
+    fmt = info.fourcc or (f"{info.bit_count}bpp" if info.uncompressed else "?")
+    report(f"textured: '{name}' via <{slot}> ({info.width}x{info.height} {fmt}, "
+           f"{info.mip_count} mip(s)) -> Base Color.")
+    return sb.image_material(name, dds_path), "textured"
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration (pure; no bpy operator state)
 # --------------------------------------------------------------------------- #
 
@@ -107,9 +187,11 @@ def import_file(filepath, *, resolver=None, import_collision=False, report=print
 
     if atype == "W3DMesh":
         mesh = w3x_xml.parse_mesh(filepath)
-        sb.build_mesh(mesh)
+        mat, status = _base_color_material_for(sb, mesh, resolver, resolver.base_dir, report)
+        sb.build_mesh(mesh, material=mat)
+        tex_note = "textured" if status == "textured" else f"untextured ({status})"
         return (f"Imported W3DMesh '{mesh.name}' ({mesh.vertex_count} verts, "
-                f"{len(mesh.triangles)} tris) — UNTEXTURED (v1: no materials/textures).")
+                f"{len(mesh.triangles)} tris) — {tex_note}.")
 
     if atype == "W3DHierarchy":
         hier = w3x_xml.parse_hierarchy(filepath)
@@ -145,6 +227,7 @@ def _import_container(filepath, resolver, import_collision, report):
     # and never clutter the model (they are limb-sized wire cubes once real extents are applied).
     box_coll = None
     n_mesh = n_box = n_box_sized = 0
+    tex_status: dict[str, int] = {}
     for sub in cont.sub_objects:
         if sub.render_kind == "CollisionBox":
             if import_collision:
@@ -169,21 +252,30 @@ def _import_container(filepath, resolver, import_collision, report):
         try:
             mpath = resolver.resolve(sub.render_name, type_hint="W3DMesh")
             mesh = w3x_xml.parse_mesh(mpath)
+            mat, status = _base_color_material_for(sb, mesh, resolver, resolver.base_dir, report)
+            tex_status[status] = tex_status.get(status, 0) + 1
             mobj = sb.build_mesh(mesh, collection=coll, bone_names=bone_names,
-                                 worlds=worlds, bone_index=sub.bone_index)
+                                 worlds=worlds, bone_index=sub.bone_index, material=mat)
             if arm_obj is not None:
                 sb.bind_mesh_to_armature(mobj, arm_obj, sub, bone_names, worlds)
             n_mesh += 1
         except Exception as e:
             report(f"WARNING: could not import mesh '{sub.render_name}': {e}")
 
-    # Signpost the v1 limitation prominently: every mesh is imported without
-    # materials/textures, so a viewer sees untextured (grey) geometry — stated-tier.
-    report(f"{n_mesh} mesh(es) imported UNTEXTURED (v1 — no materials/textures).")
+    # Honest texture coverage: how many meshes got a real diffuse vs fell back, bucketed.
+    n_tex = tex_status.get("textured", 0)
+    n_placeholder = n_mesh - n_tex
+    buckets = ", ".join(f"{k}={v}" for k, v in sorted(tex_status.items()) if k != "textured")
+    report(f"textures: {n_tex}/{n_mesh} mesh(es) got a real base-color texture; "
+           f"{n_placeholder} on the grey placeholder"
+           + (f" ({buckets})" if buckets else "")
+           + ". Material/scene display is stated-tier (no byte oracle); only the DDS payload "
+             "validity is byte-decidable.")
     box_note = f"{n_box} collision box(es)"
     if n_box:
         box_note += f" ({n_box_sized} with real extents)"
-    return (f"Imported W3DContainer '{cont.name}': {n_mesh} mesh(es) [UNTEXTURED v1], "
+    return (f"Imported W3DContainer '{cont.name}': {n_mesh} mesh(es) "
+            f"({n_tex} textured, {n_placeholder} placeholder), "
             f"{len(bone_names)} bone(s), {box_note}.")
 
 

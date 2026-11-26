@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 openwrath_import.zip
 tests/fixtures/local/
+*.dds

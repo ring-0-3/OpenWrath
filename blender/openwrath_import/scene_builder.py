@@ -38,6 +38,40 @@ def _placeholder_material() -> bpy.types.Material:
     return mat
 
 
+def image_material(tex_name: str, image_path: str) -> bpy.types.Material:
+    """A node material with ``image_path`` (a decoded DDS) on Base Color, UV-mapped.
+
+    **Blender's native loader decodes the DDS** (``bpy.data.images.load``) — no pixel
+    decoder is forked into the add-on (``docs/design/blender-integration.md`` / invariant 3
+    at ecosystem scale). The Image Texture node samples the mesh's active UV map (already
+    built in :func:`build_mesh`), so the diffuse lands UV-mapped without an explicit UV node.
+
+    Keyed on the *texture asset name* (``OW_<name>``) and ``check_existing`` on the image, so
+    meshes sharing a texture (common — a unit's parts all use one atlas) share one material
+    and one image datablock instead of re-loading per mesh. This is pure scene assembly over
+    an already-decoded DDS; no byte/format logic."""
+    matname = f"OW_{tex_name}"
+    existing = bpy.data.materials.get(matname)
+    if existing is not None and existing.use_nodes:
+        return existing
+
+    mat = bpy.data.materials.new(matname)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+    if bsdf is None:
+        bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+
+    img = bpy.data.images.load(image_path, check_existing=True)
+    tex_node = nt.nodes.new("ShaderNodeTexImage")
+    tex_node.image = img
+    tex_node.label = tex_name
+    tex_node.location = (-400.0, 300.0)
+    if bsdf is not None:
+        nt.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+
 def _bone_name_for(bone_id: int, bone_names: Optional[dict[int, str]]) -> str:
     if bone_names and bone_id in bone_names:
         return bone_names[bone_id]
@@ -106,14 +140,18 @@ def build_mesh(mesh: wx.MeshGeometry,
                collection: Optional[bpy.types.Collection] = None,
                bone_names: Optional[dict[int, str]] = None,
                worlds: Optional[list] = None,
-               bone_index: int = 0) -> bpy.types.Object:
+               bone_index: int = 0,
+               material: Optional[bpy.types.Material] = None) -> bpy.types.Object:
     """Build a Blender object from decoded geometry. Returns the object (unlinked
     scene-side if ``collection`` is None — caller links it).
 
     When ``worlds`` (pivot bind matrices) is supplied, geometry is assembled into MODEL
     space via :func:`_assemble` (rigid → its bone; skinned → blended) so the sub-objects
     form the whole model. Without it (single-asset import / the geometry gate) positions
-    stay exactly as decoded — bit-exact to the XML."""
+    stay exactly as decoded — bit-exact to the XML.
+
+    ``material`` (e.g. from :func:`image_material`) is applied when given; otherwise the
+    shared grey placeholder is used — the honest fallback for an OnDemand/unresolved slot."""
     if worlds is not None:
         positions, normals = _assemble(mesh, worlds, bone_index)
     else:
@@ -139,8 +177,8 @@ def build_mesh(mesh: wx.MeshGeometry,
     if normals:
         me.normals_split_custom_set_from_vertices([Vector(n) for n in normals])
 
-    # --- placeholder material (v1: no real textures — just make that obvious) ---
-    me.materials.append(_placeholder_material())
+    # --- material: the real diffuse image when resolved, else the grey placeholder ---
+    me.materials.append(material or _placeholder_material())
 
     me.update()
     obj = bpy.data.objects.new(mesh.name, me)

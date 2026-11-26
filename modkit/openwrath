@@ -2769,6 +2769,20 @@ def _decode_model(cfg: dict, container: str, stream: str, no_cache: bool) -> tup
                 sys.stderr.write(proc.stdout[-1500:] + proc.stderr[-800:])
                 sys.exit(f"error: decode failed for '{name}' (rc={proc.returncode}).")
 
+        def decode_optional(name: str) -> bool:
+            """Decode a reference that may legitimately be absent from this stream (a
+            texture that is OnDemand/loose, or a name that doesn't resolve). Never exits —
+            returns whether a decode was produced, so a missing texture degrades to the
+            viewer's grey placeholder instead of aborting the whole model decode."""
+            argv = bcli.build_decode_argv(
+                bab, man, str(outdir), subcommand="decompile-stream", only=name,
+                schema=schema, ref_manifests=rm, stringhashes=sh)
+            vlog("  " + " ".join(argv))
+            proc = bcli.run_decode(argv)
+            if proc.returncode != 0:
+                vlog(proc.stdout[-600:] + proc.stderr[-400:])
+            return proc.returncode == 0
+
         print(f"decoding container '{container}' from stream '{stream}' ...")
         decode(container)
         cxml = outdir / f"W3DContainer.{container}.xml"
@@ -2776,13 +2790,49 @@ def _decode_model(cfg: dict, container: str, stream: str, no_cache: bool) -> tup
             sys.exit(f"error: '{container}' did not decode to a W3DContainer "
                      f"(is it a model container? try: openwrath find {container} --type W3DContainer).")
         cont = wx.parse_container(str(cxml))
+        mesh_names = [s.render_name for s in cont.sub_objects
+                      if s.render_name and s.render_kind == "Mesh"]
         refs = ([cont.hierarchy] if cont.hierarchy else []) + [
             s.render_name for s in cont.sub_objects
             if s.render_name and s.render_kind in ("Mesh", "CollisionBox")]
         for r in refs:
             print(f"  + {r}")
             decode(r)
-        return cxml, outdir, len(refs)
+
+        # Gather the texture asset names each decoded mesh references via its FXShader, then
+        # decode those Texture assets through the SAME decode closure into the SAME outdir
+        # (no second decode loop; invariant 3). Textures are decoded non-fatally — an
+        # OnDemandTexture or an unresolved name must not abort the model (viewer falls back
+        # to the placeholder and reports it).
+        texnames: list[str] = []
+        seen: set[str] = set()
+        for mn in mesh_names:
+            mpath = outdir / f"W3DMesh.{mn}.xml"
+            if not mpath.exists():
+                continue
+            try:
+                mesh = wx.parse_mesh(str(mpath))
+            except Exception as e:
+                vlog(f"  (skip FXShader of {mn}: {e})")
+                continue
+            if mesh.shader:
+                for tn in mesh.shader.textures.values():
+                    if tn not in seen:
+                        seen.add(tn)
+                        texnames.append(tn)
+
+        n_tex = 0
+        for tn in texnames:
+            ok = decode_optional(tn)
+            if (outdir / f"Texture.{tn}.xml").exists():
+                print(f"  tex {tn}")
+                n_tex += 1
+            elif (outdir / f"OnDemandTexture.{tn}.xml").exists():
+                print(f"  tex {tn} (OnDemandTexture — streamed, no payload)")
+                n_tex += 1
+            else:
+                print(f"  tex {tn} — UNRESOLVED in '{stream}' (viewer uses placeholder)")
+        return cxml, outdir, len(refs) + n_tex
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

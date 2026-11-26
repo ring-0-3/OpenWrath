@@ -75,5 +75,24 @@
       <T><V>3</V><V>2</V><V>6</V><Nrm X="0.0" Y="0.0" Z="1.0" /><Dist>0.0</Dist></T>
       <T><V>3</V><V>6</V><V>7</V><Nrm X="0.0" Y="0.0" Z="1.0" /><Dist>0.0</Dist></T>
     </Triangles>
+    <FXShader ShaderName="ObjectsGDI.fx" TechniqueName="" TechniqueIndex="0">
+      <Constants>
+        <Texture Name="DiffuseTexture">
+          <Value>ow_test_texture</Value>
+        </Texture>
+        <Texture Name="NormalMap">
+          <Value>ow_test_texture_nrm</Value>
+        </Texture>
+        <Texture Name="SpecMap">
+          <Value></Value>
+        </Texture>
+        <Float Name="EnvMult">
+          <Value>1</Value>
+        </Float>
+        <Bool Name="AlphaTestEnable">
+          <Value>false</Value>
+        </Bool>
+      </Constants>
+    </FXShader>
   </W3DMesh>
 </AssetDeclaration>
