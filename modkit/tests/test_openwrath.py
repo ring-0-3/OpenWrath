@@ -640,6 +640,173 @@ def test_local_readme_is_loud_about_sharing():
     assert "mod package" in r and "static_mod" in r
 
 
+# --- texture edit→in-game loop (finding 0030 route) — decidable sub-anchors --------------
+# These run WITHOUT the game: the in-game render is the only acceptance for the pixels (§4,
+# stated-tier), but the DDS format-match, the payload round-trip, the project scaffold, and the
+# SkuDef activate/deactivate swap are all byte/structure-decidable and tested here.
+
+import base64 as _b64  # noqa: E402
+
+# The add-on's DDS probe is the shared validity authority (invariant 3); load it off the repo.
+sys.path.insert(0, str(OPENWRATH.parent.parent / "blender"))
+from openwrath_import import dds as _dds  # noqa: E402
+
+
+def _src_info(fourcc, w, h, mips, *, uncompressed=False, bit_count=0):
+    return _dds.DdsInfo(True, width=w, height=h, mip_count=mips,
+                        fourcc=fourcc, uncompressed=uncompressed, bit_count=bit_count)
+
+
+def test_synth_solid_dds_matches_its_spec_and_probes_valid():
+    """A synthetic solid DDS must probe VALID and MATCH the requested format/dims/mips — this is
+    the decidable drop-in gate the real-image path shares. Covers DXT1/DXT5/A8R8G8B8."""
+    cases = [("DXT1", 512, 512, 10, False, 0),
+             ("DXT5", 256, 256, 9, False, 0),
+             ("", 64, 64, 7, True, 32)]
+    for fcc, w, h, mips, unc, bpp in cases:
+        data = ow._synth_solid_dds(fcc, w, h, mips, (255, 0, 255))
+        info = _dds.probe(data)
+        assert info.valid, f"{fcc}: {info.reason}"
+        src = _src_info(fcc, w, h, mips, uncompressed=unc, bit_count=bpp)
+        assert ow._dds_match_reason(info, src) is None, f"{fcc}: should match its own spec"
+
+
+def test_synth_dxt1_solid_reproduces_0030_magenta_block():
+    """The DXT1 solid-magenta block must equal finding 0030's confirmed-in-game color0=0xF81F
+    (this is the exact control that changed the Redeemer skin) — proves it's the trivial
+    constant-block encoding, not a drifting re-derivation."""
+    import struct
+    d = ow._synth_solid_dds("DXT1", 4, 4, 1, (255, 0, 255))
+    assert struct.unpack_from("<H", d, 128)[0] == 0xF81F
+
+
+def test_dds_match_reason_rejects_each_mismatch_axis():
+    """A wrong FourCC / dims / mip count / compression class must be REJECTED — a mismatch is the
+    likely in-game-fail mode, so the gate must catch every axis."""
+    data = ow._synth_solid_dds("DXT1", 128, 128, 8, (0, 255, 0))
+    info = _dds.probe(data)
+    assert ow._dds_match_reason(info, _src_info("DXT5", 128, 128, 8)) is not None   # fourcc
+    assert ow._dds_match_reason(info, _src_info("DXT1", 256, 128, 8)) is not None   # width
+    assert ow._dds_match_reason(info, _src_info("DXT1", 128, 128, 7)) is not None   # mips
+    assert ow._dds_match_reason(info, _src_info("", 128, 128, 8, uncompressed=True,
+                                                bit_count=32)) is not None          # class
+    assert ow._dds_match_reason(info, _src_info("DXT1", 128, 128, 8)) is None       # exact match
+
+
+def test_texture_override_xml_payload_roundtrips():
+    """The authored <Texture><Payload> must base64-round-trip to the SAME DDS bytes (the payload
+    integrity anchor) and carry the record id + the asset-declaration namespace (0024 shape)."""
+    data = ow._synth_solid_dds("DXT1", 32, 32, 6, (10, 20, 30))
+    xml = ow._texture_override_xml("NURedeemer", data)
+    assert '<Texture id="NURedeemer">' in xml
+    assert 'uri:ea.com:eala:asset' in xml
+    b64 = xml.split("<Payload>")[1].split("</Payload>")[0]
+    assert _b64.b64decode(b64) == data
+
+
+def test_ensure_texture_project_scaffolds_toml_and_gitignore():
+    """A new project is scaffolded with a static_mod mod.toml and a .gitignore that keeps the
+    user's edited DDS / overlay local (boundary: zero-EA, no edited pixels in git)."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-texproj-"))
+    proj = tmp / "RedeemerSkin"
+    with _muted():
+        got = ow._ensure_texture_project(str(proj), "static_mod")
+    assert got == proj.resolve()
+    toml = (proj / "mod.toml").read_text()
+    assert 'stream = "static_mod"' in toml and 'name = "RedeemerSkin"' in toml
+    gi = (proj / ".gitignore").read_text()
+    assert "dist-local/" in gi and "*.dds" in gi
+
+
+def test_add_source_line_preserves_other_toml_content():
+    """Adding a source must PRESERVE a [strings] table (and not duplicate) — `_write_mod_spec`
+    would have dropped it, so the override authoring uses a careful in-place edit instead."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-texsrc-"))
+    proj = tmp
+    (proj / "mod.toml").write_text(
+        '[mod]\nname = "m"\nstream = "static_mod"\nsources = ["src/a.xml"]\n\n'
+        '[strings]\n"UNIT:Foo" = "Bar"\n', encoding="utf-8")
+    ow._add_source_line(proj, "src/Texture.NURedeemer.xml")
+    ow._add_source_line(proj, "src/Texture.NURedeemer.xml")   # idempotent
+    import tomllib
+    doc = tomllib.loads((proj / "mod.toml").read_text())
+    assert doc["mod"]["sources"] == ["src/a.xml", "src/Texture.NURedeemer.xml"]
+    assert doc["strings"]["UNIT:Foo"] == "Bar"   # [strings] survived
+
+
+def test_encode_image_fails_clearly_without_an_encoder(monkeypatch=None):
+    """With no external encoder on PATH, the image path must exit with an ACTIONABLE message
+    (name the tool + the --solid fallback) — the encoder is an external dependency (boundary)."""
+    saved = ow._detect_dds_encoder
+    ow._detect_dds_encoder = lambda: None
+    try:
+        ow._encode_image_to_dds("/nonexistent.png", "/tmp/out.dds",
+                                fourcc="DXT1", mips=10, width=512, height=512)
+        assert False, "expected SystemExit when no encoder is present"
+    except SystemExit as e:
+        msg = str(e)
+        assert "nvcompress" in msg and "--solid" in msg
+    finally:
+        ow._detect_dds_encoder = saved
+
+
+def _fake_cfg_with_skudef(tmp):
+    install = tmp / "install"
+    install.mkdir(parents=True, exist_ok=True)
+    sku = install / "CNC3EP1_english_1.09.SkuDef"
+    sku.write_text("mod-game CNC3\nadd-big CNC3EP1.big\nadd-config Core\\config.txt\n",
+                   encoding="utf-8")
+    return {"install_skudef": str(sku), "game_install": str(install)}, sku
+
+
+def test_mod_activate_then_deactivate_swaps_the_skudef():
+    """activate must back up the pristine SkuDef and ADD exactly our add-config line; deactivate
+    must REMOVE exactly that line (the papercut the 0030 test did by hand, now reversible)."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-activate-"))
+    cfg, sku = _fake_cfg_with_skudef(tmp)
+    saved_rc, saved_gr = ow.read_config, ow.game_running
+    ow.read_config = lambda: cfg
+    ow.game_running = lambda: False
+    try:
+        line = ow._win_mods_skudef_line("RedeemerSkin")
+        with _muted():
+            ow.cmd_mod_activate(argparse.Namespace(name="RedeemerSkin", force=False))
+        text = sku.read_text()
+        assert line in text, "activate added the add-config line"
+        assert (sku.with_name(sku.name + ".openwrath-orig")).exists(), "pristine backup made"
+        # idempotent: second activate does not duplicate
+        with _muted():
+            ow.cmd_mod_activate(argparse.Namespace(name="RedeemerSkin", force=False))
+        assert sku.read_text().count(line) == 1
+        with _muted():
+            ow.cmd_mod_deactivate(argparse.Namespace(name="RedeemerSkin", all=False, force=False))
+        assert line not in sku.read_text(), "deactivate removed the line"
+        # original content intact (add-big line still present)
+        assert "add-big CNC3EP1.big" in sku.read_text()
+    finally:
+        ow.read_config, ow.game_running = saved_rc, saved_gr
+
+
+def test_mod_deactivate_all_restores_pristine_skudef():
+    """`deactivate --all` restores the pristine pre-OpenWrath SkuDef backup verbatim."""
+    tmp = Path(tempfile.mkdtemp(prefix="ow-deall-"))
+    cfg, sku = _fake_cfg_with_skudef(tmp)
+    pristine = sku.read_text()
+    saved_rc, saved_gr = ow.read_config, ow.game_running
+    ow.read_config = lambda: cfg
+    ow.game_running = lambda: False
+    try:
+        with _muted():
+            ow.cmd_mod_activate(argparse.Namespace(name="A", force=False))
+            ow.cmd_mod_activate(argparse.Namespace(name="B", force=False))
+        assert sku.read_text() != pristine
+        with _muted():
+            ow.cmd_mod_deactivate(argparse.Namespace(name=None, all=True, force=False))
+        assert sku.read_text() == pristine
+    finally:
+        ow.read_config, ow.game_running = saved_rc, saved_gr
+
+
 # --- runner (used when pytest is absent) -------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

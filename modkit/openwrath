@@ -2876,6 +2876,527 @@ def cmd_blender_view(args) -> int:
     return 0
 
 
+# =========================================================================================
+# Texture editing (§4 frontier) — the convenient Blender edit -> in-game loop.
+#
+# PROVEN DELIVERY ROUTE (finding 0030, confirmed in-game on retail 1.3): an edited DDS carried
+# as a `Texture` RECORD in a `static_mod` overlay (NOT a loose file — 0029 showed that fails for
+# record-backed unit textures). This section only ADDS the authoring front: read a shipped
+# record's format, produce a format-MATCHED DDS (external encoder for real images; a synthetic
+# solid control for sanity/tests), and wrap it as the 0024 `<Texture><Payload>` the compiler
+# already understands. Packaging is the EXISTING `mod build-local` (the 0017 complete overlay);
+# format validity rides the EXISTING `dds.probe` (invariant 3 — no second DDS/overlay path).
+#
+# TIER: STATED, never byte-exact. New/edited pixels have NO byte oracle — EA's DXT compressor is
+# not bit-reproducible (verification-blind-spots §4). The in-game render is the only acceptance.
+# The DECIDABLE sub-anchors that DO run without the game: the encoded DDS must (a) pass dds.probe
+# and (b) match the shipped record's FourCC + width/height + mip count (a wrong-format payload is
+# the likely in-game-fail mode), and (c) survive a base64 round-trip into/out of the record XML.
+# =========================================================================================
+
+def _import_addon_dds(cfg: dict):
+    """Import the add-on's pure-stdlib `dds` module (header probe + base64), so format validity
+    rides the SAME code the viewer uses (invariant 3 — one DDS authority, no second probe)."""
+    ow = cfg.get("openwrath") or str(openwrath_dir())
+    bdir = str(Path(ow) / "blender")
+    if bdir not in sys.path:
+        sys.path.insert(0, bdir)
+    from openwrath_import import dds   # noqa: E402
+    return dds
+
+
+def _decode_texture_record(cfg: dict, name: str, stream: str, no_cache: bool = False):
+    """Decode ONE shipped `Texture` record from the base stream; return (dds_bytes, DdsInfo).
+
+    This is how we learn the format a drop-in override must MATCH (dims / FourCC / mip count),
+    read from the user's own shipped data — never guessed. Reuses `_decompress_base_stream` +
+    the add-on's shared decode builder + `parse_texture` + `dds.probe` (invariant 3). Exits with
+    a clear message when the name is an `OnDemandTexture` / payloadless (those stream their
+    pixels — a different route than the record overlay) or simply absent. READ-only on the
+    install."""
+    import shutil, tempfile
+    bcli, wx = _import_addon_cli(cfg)
+    dds = _import_addon_dds(cfg)
+    ow, bm, schema = _need(cfg, "openwrath", "base_manifests", "schema")
+    bab = ["dotnet", str(Path(ow) / "Debug" / "bab-decompile.dll")]
+    rm = ";".join(str(Path(bm) / f"{n}.manifest")
+                  for n in ("global_common_2", "static_common_2", "global_english_2"))
+    sh = _default_stringhashes(cfg)
+    work = _decompress_base_stream(cfg, stream, no_cache)
+    outdir = Path(tempfile.mkdtemp(prefix="openwrath-texfmt-"))
+    try:
+        man = str(work / f"{stream}.manifest")
+        argv = bcli.build_decode_argv(bab, man, str(outdir), subcommand="decompile-stream",
+                                      only=name, schema=schema, ref_manifests=rm, stringhashes=sh)
+        vlog("  " + " ".join(argv))
+        proc = bcli.run_decode(argv)
+        txml = outdir / f"Texture.{name}.xml"
+        odxml = outdir / f"OnDemandTexture.{name}.xml"
+        if odxml.exists() and not txml.exists():
+            sys.exit(f"error: '{name}' in '{stream}' is an OnDemandTexture (pixels streamed on "
+                     f"demand / as a loose file — no embedded payload to format-match). The "
+                     f"record-overlay route targets embedded Texture records (findings 0024/0030).")
+        if not txml.exists():
+            sys.stderr.write(proc.stdout[-1200:] + proc.stderr[-600:])
+            sys.exit(f"error: no Texture record named '{name}' decoded from '{stream}' "
+                     f"(rc={proc.returncode}). Try `openwrath find {name} --type Texture`, "
+                     f"or pass --stream <stream>.")
+        tex = wx.parse_texture(str(txml))
+        if tex.is_ondemand or not tex.payload_b64:
+            sys.exit(f"error: Texture '{name}' carries no <Payload> (nothing to format-match).")
+        data, info = dds.decode_and_probe(tex.payload_b64)
+        if data is None or not info.valid:
+            sys.exit(f"error: shipped Texture '{name}' payload is not a valid DDS "
+                     f"({info.reason}) — cannot read its format.")
+        return data, info
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
+# --- DDS producers ----------------------------------------------------------------------
+# A shipped Texture record wraps a literal D3D9 DDS (0024). To override it we emit a DDS that
+# MATCHES its format+dims+mips. Two producers, both validated by the same match assertion:
+#   * _synth_solid_dds  — a SOLID-color DDS (the trivial constant-block encoding the engine
+#                         accepted in 0029/0030). NOT a DXT compressor; no external tool. Used
+#                         for the --solid control and the decidable tests.
+#   * _encode_image_to_dds — a real image through an EXTERNAL encoder (nvcompress/nvtt/texconv).
+#                         We never hand-roll a compressor (boundary); the match assertion is the
+#                         safety net against an encoder emitting the wrong (e.g. DX10) form.
+
+_DDS_MAGIC = b"DDS "
+
+
+def _rgb565(r: int, g: int, b: int) -> int:
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def _mip_dims(w: int, h: int, i: int) -> tuple[int, int]:
+    return max(1, w >> i), max(1, h >> i)
+
+
+def _full_mip_count(w: int, h: int) -> int:
+    import math
+    return int(math.floor(math.log2(max(w, h)))) + 1
+
+
+def _parse_hex_rgb(s: str) -> tuple[int, int, int]:
+    s = (s or "").strip().lstrip("#")
+    try:
+        if len(s) != 6:
+            raise ValueError
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except ValueError:
+        sys.exit(f"error: --solid expects an RRGGBB hex colour (got {s!r}).")
+
+
+def _dds_header(fourcc: bytes, w: int, h: int, mips: int, *, uncompressed: bool = False,
+                bit_count: int = 0, linear_size: int = 0) -> bytes:
+    """A standard D3D9 (no DX10 extended) DDS_HEADER. File offsets mirror what `dds.probe`
+    reads back (magic@0, dwSize@4, dwHeight@12, dwWidth@16, dwMipMapCount@28, pf@76)."""
+    import struct
+    mips = mips or 1
+    flags = 0x1 | 0x2 | 0x4 | 0x1000            # CAPS | HEIGHT | WIDTH | PIXELFORMAT
+    if mips > 1:
+        flags |= 0x20000                        # MIPMAPCOUNT
+    flags |= 0x8 if uncompressed else 0x80000   # PITCH | LINEARSIZE
+    caps = 0x1000                               # TEXTURE
+    if mips > 1:
+        caps |= 0x8 | 0x400000                  # COMPLEX | MIPMAP
+    hdr = bytearray(128)
+    hdr[0:4] = _DDS_MAGIC
+    struct.pack_into("<I", hdr, 4, 124)         # dwSize
+    struct.pack_into("<I", hdr, 8, flags)
+    struct.pack_into("<I", hdr, 12, h)
+    struct.pack_into("<I", hdr, 16, w)
+    struct.pack_into("<I", hdr, 20, linear_size)
+    struct.pack_into("<I", hdr, 28, mips)
+    struct.pack_into("<I", hdr, 76, 32)         # pf dwSize
+    if uncompressed:
+        struct.pack_into("<I", hdr, 80, 0x40 | 0x1)     # DDPF_RGB | DDPF_ALPHAPIXELS
+        struct.pack_into("<I", hdr, 88, bit_count)
+        struct.pack_into("<I", hdr, 92, 0x00FF0000)     # R mask (A8R8G8B8)
+        struct.pack_into("<I", hdr, 96, 0x0000FF00)     # G
+        struct.pack_into("<I", hdr, 100, 0x000000FF)    # B
+        struct.pack_into("<I", hdr, 104, 0xFF000000)    # A
+    else:
+        struct.pack_into("<I", hdr, 80, 0x4)            # DDPF_FOURCC
+        hdr[84:88] = fourcc
+    struct.pack_into("<I", hdr, 108, caps)      # dwCaps
+    return bytes(hdr)
+
+
+def _synth_solid_dds(fourcc: str, w: int, h: int, mips: int, rgb: tuple[int, int, int]) -> bytes:
+    """A format-matched SOLID-color DDS — the 0029/0030 control, NOT a DXT compressor. Supports
+    DXT1 / DXT5 (+DXT4) / uncompressed A8R8G8B8 (the shipped formats 0024 observed on units)."""
+    import struct
+    r, g, b = rgb
+    mips = mips or 1
+    fcc = (fourcc or "").upper()
+    c = _rgb565(r, g, b)
+    if fcc == "DXT1":
+        block = struct.pack("<HH", c, c) + b"\x00\x00\x00\x00"   # color0=color1 -> solid, opaque
+        bpb = 8
+    elif fcc in ("DXT5", "DXT4"):
+        block = bytes([0xFF, 0, 0, 0, 0, 0, 0, 0]) + struct.pack("<HH", c, c) + b"\x00\x00\x00\x00"
+        bpb = 16
+    elif not fcc:
+        block = None  # uncompressed path below
+    else:
+        sys.exit(f"error: --solid supports DXT1/DXT5/A8R8G8B8 only (source format is {fourcc!r}). "
+                 f"Use --image + an external encoder for this format.")
+    out = bytearray()
+    if block is not None:
+        top = ((w + 3) // 4) * ((h + 3) // 4)
+        out += _dds_header(fcc.encode("ascii"), w, h, mips, linear_size=top * bpb)
+        for i in range(mips):
+            mw, mh = _mip_dims(w, h, i)
+            out += block * (((mw + 3) // 4) * ((mh + 3) // 4))
+    else:
+        px = struct.pack("<I", (0xFF << 24) | (r << 16) | (g << 8) | b)   # A8R8G8B8 DWORD
+        out += _dds_header(b"", w, h, mips, uncompressed=True, bit_count=32, linear_size=w * 4)
+        for i in range(mips):
+            mw, mh = _mip_dims(w, h, i)
+            out += px * (mw * mh)
+    return bytes(out)
+
+
+def _detect_dds_encoder() -> dict | None:
+    """Locate an external DDS encoder on PATH. Priority: nvcompress (emits LEGACY D3D9 DDS by
+    default — the form findings 0021/0024/0029 confirm the engine requires), then nvtt_export,
+    then texconv. Returns {'kind','cmd'} or None. We never ship or hand-roll a compressor."""
+    import shutil
+    for kind in ("nvcompress", "nvtt_export", "texconv"):
+        p = shutil.which(kind)
+        if p:
+            return {"kind": kind, "cmd": p}
+    return None
+
+
+def _encode_image_to_dds(img_path: str, out_path, *, fourcc: str, mips: int,
+                         width: int, height: int) -> str:
+    """Encode a source image to a DDS format-matched to a shipped record, via an external
+    encoder. Resizes to width×height with Pillow when available. Returns the encoder kind.
+    Exits clearly if no encoder is found (BOUNDARY: the encoder is an external dependency).
+    The CALLER still runs `_dds_match_reason` — this never asserts byte-exact (§4)."""
+    import subprocess, tempfile, shutil as _sh
+    enc = _detect_dds_encoder()
+    if not enc:
+        sys.exit("error: no DDS encoder found on PATH. Install NVIDIA Texture Tools "
+                 "(`nvcompress` — recommended, emits legacy D3D9 DDS) or texconv, then retry. "
+                 "(No encoder? use --solid RRGGBB for a synthetic control pass.)")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fcc = (fourcc or "").upper()
+    src = img_path
+    tmp = None
+    try:
+        try:
+            from PIL import Image   # optional: only needed to resize a non-matching image
+            im = Image.open(img_path).convert("RGBA")
+            if im.size != (width, height):
+                vlog(f"  resize {im.size} -> {(width, height)} (Pillow)")
+                im = im.resize((width, height), Image.LANCZOS)
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+            im.save(tmp, "PNG")
+            src = tmp
+        except ImportError:
+            vlog("  (Pillow absent — not resizing; a size mismatch will be caught by the match check)")
+        full = _full_mip_count(width, height)
+        want = mips or 1
+        if enc["kind"] == "nvcompress":
+            flag = {"DXT1": "-bc1", "DXT3": "-bc2", "DXT5": "-bc3", "": "-rgb"}.get(fcc)
+            if flag is None:
+                sys.exit(f"error: nvcompress mapping has no entry for FourCC {fourcc!r} "
+                         f"(supported: DXT1/DXT3/DXT5/uncompressed). Use --solid or another encoder.")
+            argv = [enc["cmd"], flag, "-silent"]
+            if want == 1:
+                argv.append("-nomips")
+            elif want != full:
+                sys.exit(f"error: shipped record has {want} mip(s); nvcompress emits either 1 "
+                         f"(-nomips) or the full chain ({full}) for {width}x{height} — this exact "
+                         f"count isn't targetable by the auto-encoder (documented gap).")
+            argv += [src, str(out_path)]
+            r = subprocess.run(argv, capture_output=True, text=True)
+        elif enc["kind"] == "nvtt_export":
+            fmt = {"DXT1": "bc1", "DXT3": "bc2", "DXT5": "bc3", "": "rgba"}.get(fcc, "bc1")
+            argv = [enc["cmd"], "-f", fmt, "-o", str(out_path), src]
+            r = subprocess.run(argv, capture_output=True, text=True)
+        else:   # texconv (best-effort; -dx9 forces a legacy header). Writes <stem>.dds to -o dir.
+            fmt = {"DXT1": "DXT1", "DXT3": "DXT3", "DXT5": "DXT5", "": "A8R8G8B8"}.get(fcc, "DXT1")
+            argv = [enc["cmd"], "-f", fmt, "-dx9", "-y", "-m", str(want),
+                    "-o", str(out_path.parent), src]
+            r = subprocess.run(argv, capture_output=True, text=True)
+            produced = out_path.parent / (Path(src).stem + ".dds")
+            if produced.exists() and produced.resolve() != out_path.resolve():
+                _sh.move(str(produced), str(out_path))
+        vlog("  encode: " + " ".join(argv))
+        if r.returncode != 0 or not out_path.exists():
+            sys.exit(f"error: DDS encode failed ({enc['kind']}, rc={r.returncode}):\n"
+                     f"{r.stdout[-800:]}{r.stderr[-800:]}")
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return enc["kind"]
+
+
+def _dds_match_reason(info, src) -> str | None:
+    """None if the encoded DDS `info` matches the shipped `src` record (format+dims+mips);
+    else a human reason. This is the byte-DECIDABLE drop-in gate (no in-game needed)."""
+    if not info.valid:
+        return f"encoded DDS invalid: {info.reason}"
+    if (info.fourcc or "") != (src.fourcc or ""):
+        return f"FourCC {info.fourcc or '(rgb)'} != source {src.fourcc or '(rgb)'}"
+    if bool(info.uncompressed) != bool(src.uncompressed):
+        return "compressed/uncompressed mismatch"
+    if info.uncompressed and info.bit_count != src.bit_count:
+        return f"bit count {info.bit_count} != source {src.bit_count}"
+    if info.width != src.width or info.height != src.height:
+        return f"dimensions {info.width}x{info.height} != source {src.width}x{src.height}"
+    if (info.mip_count or 1) != (src.mip_count or 1):
+        return f"mip count {info.mip_count or 1} != source {src.mip_count or 1}"
+    return None
+
+
+def _texture_override_xml(record_name: str, dds_bytes: bytes) -> str:
+    """The authoring form the compiler accepts (0024/0030): a `<Texture><Payload>` carrying the
+    DDS as base64. `SchemaSet.BindRuntimeTexturePayload` + `Marshaler.Texture` write it straight
+    into the record's DataBlob — no re-encode. (record_name is an asset id: alnum/underscore.)"""
+    import base64
+    b64 = base64.b64encode(dds_bytes).decode("ascii")
+    return (f'<?xml version="1.0" encoding="utf-8"?>\n'
+            f'<AssetDeclaration xmlns="uri:ea.com:eala:asset">\n'
+            f'  <Texture id="{record_name}">\n'
+            f'    <Payload>{b64}</Payload>\n'
+            f'  </Texture>\n'
+            f'</AssetDeclaration>\n')
+
+
+def _ensure_texture_project(project: str, stream: str) -> Path:
+    """Return the project dir (with a mod.toml); scaffold a minimal static_mod texture mod if
+    absent, plus a .gitignore so the user's edited DDS / overlay / base64 stay local (boundary:
+    zero-EA, no edited pixels in git)."""
+    proj = Path(project).resolve()
+    if not (proj / "mod.toml").exists():
+        (proj / "src").mkdir(parents=True, exist_ok=True)
+        _write_mod_spec(proj, {"name": proj.name, "stream": stream, "sources": []})
+        (proj / ".gitignore").write_text(
+            "# OpenWrath texture mod — local-only (EA-derived overlay + your edited pixels).\n"
+            "# The Texture override XML embeds a base64 DDS (your edited pixels) — regenerable\n"
+            "# from your source image, so it's gitignored by default (no base64 blobs in git).\n"
+            "dist-local/\n*.dds\nsrc/Texture.*.xml\n", encoding="utf-8")
+        print(f"  scaffolded mod project: {proj}  (name={proj.name}, stream={stream})")
+    return proj
+
+
+def _add_source_line(proj: Path, relpath: str) -> None:
+    """Add `relpath` to the mod.toml [mod] sources array, PRESERVING the rest of the file (so a
+    [strings] table or comments survive — `_write_mod_spec` would drop them)."""
+    import tomllib, re as _re
+    toml = proj / "mod.toml"
+    text = toml.read_text(encoding="utf-8")
+    doc = tomllib.loads(text)
+    srcs = list(doc.get("mod", {}).get("sources", []))
+    if relpath in srcs:
+        return
+    srcs.append(relpath)
+    new_arr = "sources = [" + ", ".join(f'"{s}"' for s in srcs) + "]"
+    m = _re.search(r"(?ms)^\s*sources\s*=\s*\[.*?\]", text)
+    if m:
+        text = text[:m.start()] + new_arr + text[m.end():]
+    else:
+        m2 = _re.search(r"(?m)^\[mod\]\s*$", text)
+        if m2:
+            text = text[:m2.end()] + "\n" + new_arr + text[m2.end():]
+        else:
+            text = text.rstrip() + "\n" + new_arr + "\n"
+    toml.write_text(text, encoding="utf-8")
+
+
+def _produce_matched_dds(cfg, dds, rec, stream, no_cache, image, rgb):
+    """Read the shipped record format, produce a matched DDS (synthetic solid if `rgb`, else via
+    the external encoder on `image`), validate + assert the match. Returns (dds_bytes, info, src,
+    producer). Exits on a format mismatch — the likely in-game-fail mode."""
+    import tempfile
+    _b, src = _decode_texture_record(cfg, rec, stream, no_cache)
+    fmt = src.fourcc or f"{src.bit_count}bpp-rgb"
+    print(f"  source '{rec}': {src.width}x{src.height} {fmt} {src.mip_count or 1} mip(s)")
+    if rgb is not None:
+        data = _synth_solid_dds(src.fourcc, src.width, src.height, src.mip_count, rgb)
+        producer = "synthetic-solid"
+    else:
+        if not image:
+            sys.exit(f"error: no --image given for record '{rec}' (and no --solid).")
+        tmp = Path(tempfile.mkdtemp(prefix="openwrath-enc-")) / f"{rec}.dds"
+        producer = _encode_image_to_dds(image, tmp, fourcc=src.fourcc, mips=src.mip_count,
+                                        width=src.width, height=src.height)
+        data = tmp.read_bytes()
+        import shutil as _sh
+        _sh.rmtree(tmp.parent, ignore_errors=True)
+    info = dds.probe(data)
+    reason = _dds_match_reason(info, src)
+    if reason:
+        sys.exit(f"error: [{rec}] encoded DDS does NOT match the shipped record ({reason}). "
+                 f"Refusing — a wrong-format payload is the likely in-game-fail mode. "
+                 f"(producer: {producer})")
+    return data, info, src, producer
+
+
+def cmd_texture_encode(args) -> int:
+    """Encode an image (or a --solid control) to a DDS format-matched to a shipped Texture
+    record, and write it out. Pure encode step (no packaging) — handy to eyeball the DDS or
+    feed it elsewhere. Asserts the format/dims/mips match the shipped record."""
+    cfg = read_config()
+    _need(cfg, "openwrath", "base_manifests", "schema", "game_install")
+    dds = _import_addon_dds(cfg)
+    stream = args.stream or "static_common"
+    rgb = _parse_hex_rgb(args.solid) if args.solid else None
+    data, info, src, producer = _produce_matched_dds(cfg, dds, args.like, stream,
+                                                     args.no_cache, args.image, rgb)
+    out = Path(args.out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    fmt = info.fourcc or f"{info.bit_count}bpp-rgb"
+    print(f"✓ {out}  [{producer}]  {info.width}x{info.height} {fmt} {info.mip_count or 1} mip(s) "
+          f"— matches shipped '{args.like}'.")
+    print("  stated-tier: new pixels have no byte oracle; in-game render is the only acceptance.")
+    return 0
+
+
+def cmd_texture_override(args) -> int:
+    """Author edited `Texture` record override(s) into a mod project — the Blender edit→in-game
+    loop's packaging half, on the PROVEN record-overlay route (finding 0030). For each record:
+    read the shipped format, encode a format-matched DDS (external encoder for --image; synthetic
+    solid for --solid), base64 it into a `<Texture><Payload>` (0024), and add it to the project's
+    sources. Then `mod build-local` + `mod activate` close the loop. LOCAL-ONLY; stated-tier."""
+    cfg = read_config()
+    _need(cfg, "openwrath", "sdk", "base_manifests", "schema", "game_install")
+    dds = _import_addon_dds(cfg)
+    stream = args.stream or "static_common"
+    records = args.record or []
+    images = args.image or []
+    if not records:
+        sys.exit("error: pass at least one --record <TextureName> (e.g. --record NURedeemer).")
+    if not args.solid and len(images) != len(records):
+        sys.exit(f"error: got {len(images)} --image and {len(records)} --record. Provide one "
+                 f"--image per --record (in order), or --solid RRGGBB to synthesize all.")
+    rgb = _parse_hex_rgb(args.solid) if args.solid else None
+
+    proj = _ensure_texture_project(args.project, "static_mod")
+    srcdir = proj / "src"
+    srcdir.mkdir(parents=True, exist_ok=True)
+
+    written = []
+    for i, rec in enumerate(records):
+        print(f"[{rec}] reading shipped format from '{stream}' ...")
+        img = None if args.solid else images[i]
+        data, info, src, producer = _produce_matched_dds(cfg, dds, rec, stream, args.no_cache, img, rgb)
+        xml = _texture_override_xml(rec, data)
+        # Payload round-trip (decidable): what we wrote base64-decodes back to the SAME bytes.
+        rt, _rtinfo = dds.decode_and_probe(xml.split("<Payload>")[1].split("</Payload>")[0])
+        if rt != data:
+            sys.exit(f"error: [{rec}] payload base64 round-trip mismatch — refusing (internal).")
+        xp = srcdir / f"Texture.{rec}.xml"
+        xp.write_text(xml, encoding="utf-8")
+        _add_source_line(proj, f"src/Texture.{rec}.xml")
+        written.append((rec, info, producer))
+        print(f"  ✓ wrote {xp.relative_to(proj)}  [{producer}]  ({len(data):,} DDS bytes)")
+
+    print(f"\n✓ authored {len(written)} texture override(s) into {proj}")
+    print("  STATED-TIER: new pixels have NO byte oracle — the in-game render is the only acceptance.")
+    print("\nnext — build the LOCAL-ONLY overlay, activate it, launch KW (standard map):")
+    print(f"  openwrath mod build-local {proj} --install")
+    print(f"  openwrath mod activate {proj.name}")
+    print(f"  # check the unit skin in-game, then turn it off:")
+    print(f"  openwrath mod deactivate {proj.name}")
+    return 0
+
+
+# --- mod activate / deactivate: the master-SkuDef add-config swap (0030 did this by hand) ----
+def _master_skudef(cfg: dict) -> Path:
+    sk = cfg.get("install_skudef")
+    if sk and Path(sk).exists():
+        return Path(sk)
+    gi = cfg.get("game_install")
+    if gi and (found := find_install_skudef(Path(gi))):
+        return found
+    sys.exit("error: master SkuDef not found — run `openwrath detect` (or set install_skudef "
+             "in the config).")
+
+
+def _orig_backup(sku: Path) -> Path:
+    return sku.with_name(sku.name + ".openwrath-orig")
+
+
+def cmd_mod_activate(args) -> int:
+    """Activate a built LOCAL mod by adding its `add-config` line to the master SkuDef — the
+    papercut the 0030 test did by hand, implemented properly. Backs up the pristine SkuDef on
+    first use; warns about static-overlay mutual exclusivity (0017) and online safety (0030)."""
+    cfg = read_config()
+    name = args.name
+    if game_running() and not args.force:
+        sys.exit("error: Kane's Wrath appears to be RUNNING — close it before activate (or --force).")
+    sku = _master_skudef(cfg)
+    line = _win_mods_skudef_line(name)
+    text = sku.read_text(encoding="utf-8", errors="replace")
+    orig = _orig_backup(sku)
+    if not orig.exists():
+        orig.write_bytes(sku.read_bytes())
+        print(f"  backed up pristine master SkuDef -> {orig.name}")
+    lines = text.splitlines()
+    nrm = lambda s: s.strip().lower()
+    if any(nrm(l) == nrm(line) for l in lines):
+        print(f"  already active: {name}")
+        return 0
+    others = [l for l in lines if "add-config" in l.lower() and "\\mods\\" in l.lower()
+              and nrm(l) != nrm(line)]
+    if others:
+        print("  ⚠ other mod add-config line(s) are present. Static-overlay mods are MUTUALLY")
+        print("    EXCLUSIVE (finding 0017) — if any below is a static_mod overlay, only one wins:")
+        for l in others:
+            print(f"      {l.strip()}")
+    new = (text if text.endswith("\n") else text + "\n") + line + "\n"
+    sku.write_text(new, encoding="utf-8")
+    print(f"  ✓ activated '{name}' in {sku.name}")
+    print("  ⚠ ONLINE SAFETY: a record overlay changes the stream's identity/checksum — it is NOT")
+    print("    inherently C&C-Online / replay-safe (finding 0030). Single-player / local / consenting")
+    print("    lobby only; this is a MOD target, never a base-game edit.")
+    print(f"\n  launch Kane's Wrath on a STANDARD map. Turn it off: openwrath mod deactivate {name}")
+    return 0
+
+
+def cmd_mod_deactivate(args) -> int:
+    """Remove a mod's `add-config` line from the master SkuDef (reverses `activate`). With --all,
+    restore the pristine pre-OpenWrath SkuDef backup and deactivate everything OpenWrath added."""
+    cfg = read_config()
+    if game_running() and not args.force:
+        sys.exit("error: Kane's Wrath appears to be RUNNING — close it before deactivate (or --force).")
+    sku = _master_skudef(cfg)
+    orig = _orig_backup(sku)
+    if getattr(args, "all", False):
+        if not orig.exists():
+            sys.exit(f"error: no pristine backup {orig.name} to restore from.")
+        sku.write_bytes(orig.read_bytes())
+        print(f"  ✓ restored pristine master SkuDef from {orig.name} (all OpenWrath mods off).")
+        return 0
+    name = args.name
+    if not name:
+        sys.exit("error: pass a mod name, or --all to restore the pristine SkuDef.")
+    line = _win_mods_skudef_line(name)
+    nrm = lambda s: s.strip().lower()
+    lines = sku.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept = [l for l in lines if nrm(l) != nrm(line)]
+    if len(kept) == len(lines):
+        print(f"  not active (no line for '{name}'): {sku.name}")
+        return 0
+    sku.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    print(f"  ✓ deactivated '{name}' in {sku.name}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
     # Global -v/--verbose, accepted either before OR after the subcommand. The shared copy uses
@@ -2967,6 +3488,19 @@ def main() -> int:
                         help="pre-flight validation (dangling refs / unknown fields / schema drift)")
     ck.add_argument("project", help="path to the mod project dir (contains mod.toml)")
     ck.set_defaults(func=cmd_mod_check)
+    act = mod.add_parser("activate", parents=[common],
+                         help="add a built LOCAL mod's add-config line to the master SkuDef "
+                              "(backs it up; warns on overlay conflict + online-safety)")
+    act.add_argument("name", help="mod name (the project/Mods folder name, e.g. RedeemerSkin)")
+    act.add_argument("--force", action="store_true", help="activate even if the game appears to be running")
+    act.set_defaults(func=cmd_mod_activate)
+    dea = mod.add_parser("deactivate", parents=[common],
+                         help="remove a mod's add-config line from the master SkuDef (reverse of activate)")
+    dea.add_argument("name", nargs="?", help="mod name to deactivate (omit with --all)")
+    dea.add_argument("--all", action="store_true",
+                     help="restore the pristine pre-OpenWrath SkuDef backup (turns off ALL our mods)")
+    dea.add_argument("--force", action="store_true", help="deactivate even if the game appears to be running")
+    dea.set_defaults(func=cmd_mod_deactivate)
 
     # discovery commands (read the installed stream; help you find what to mod + what it touches)
     def _disc(name, help):
@@ -3018,6 +3552,37 @@ def main() -> int:
     blv.add_argument("--no-cache", dest="no_cache", action="store_true",
                      help="bypass the extracted-stream cache (always re-extract)")
     blv.set_defaults(func=cmd_blender_view)
+
+    # texture: the Blender edit -> in-game loop's authoring front (stated-tier; finding 0030 route)
+    tex_g = sub.add_parser("texture", parents=[common],
+                           help="edit a shipped unit texture: encode a format-matched DDS + author "
+                                "a Texture record override (stated-tier; LOCAL-ONLY record overlay)"
+                           ).add_subparsers(dest="tcmd", required=True)
+    tov = tex_g.add_parser("override", parents=[common],
+                           help="author edited Texture record override(s) into a mod project "
+                                "(encode DDS -> <Texture><Payload> -> sources); then build-local + activate")
+    tov.add_argument("project", help="mod project dir to author into (scaffolded if absent)")
+    tov.add_argument("--record", action="append", default=[],
+                     help="shipped Texture record id to override, e.g. NURedeemer (repeatable)")
+    tov.add_argument("--image", action="append", default=[],
+                     help="source image for the matching --record (one per --record, in order)")
+    tov.add_argument("--solid", help="RRGGBB: synthesize a solid-color control DDS for ALL records "
+                                     "(the 0029/0030 route; no encoder needed)")
+    tov.add_argument("--stream", help="base stream to read the shipped format from (default: static_common)")
+    tov.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    tov.set_defaults(func=cmd_texture_override)
+    ten = tex_g.add_parser("encode", parents=[common],
+                           help="encode ONE image (or --solid) to a format-matched DDS vs a shipped "
+                                "record and write it out (no packaging)")
+    ten.add_argument("--like", required=True, help="shipped Texture record whose format to match, e.g. NURedeemer")
+    ten.add_argument("--out", required=True, help="output .dds path")
+    ten.add_argument("--image", help="source image to encode (omit with --solid)")
+    ten.add_argument("--solid", help="RRGGBB: synthesize a solid-color DDS instead of encoding an image")
+    ten.add_argument("--stream", help="base stream to read the shipped format from (default: static_common)")
+    ten.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    ten.set_defaults(func=cmd_texture_encode)
 
     ver = sub.add_parser("verify", parents=[common],
                          help="byte-exact check of an asset against the GAME'S OWN shipped bytes")

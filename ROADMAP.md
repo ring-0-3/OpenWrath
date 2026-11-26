@@ -63,10 +63,16 @@ strength: finish what's decidable, then validate the keystone, then the frontier
      else rebuilds from live geometry (**stated tier**, edits reported, never byte-exact). The gate bounds the
      exporter to the 0025-verified packer paths (no half-float / Xenon / >2 weights). No compiler/comparator/schema/
      BYO file touched; regressions clean (0025 gate, Armor 207/207, Weapon 456/456, schema-selftest, 0026/0027 tests).
-7. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
-   path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
-   modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.
-   (This is also the in-game delivery route for **edited** textures — the stated-tier half of "edit textures".)
+7. ✅/📋 **First visible in-game win — edit a unit texture, see it in KW.** The loose-file `add-search-path` route
+   (0021 milestone 0) was tested and **does NOT work** for record-backed unit skins on retail 1.3
+   ([0029](docs/findings/0029-loose-file-texture-override-does-not-shadow-record-backed-unit-textures-on-1.3.md)); the
+   reliable route is a **`Texture` record overlay** (EA's own method), **proven in-game**
+   ([0030](docs/findings/0030-record-overlay-texture-override-works-on-1.3.md)) and **productized into a convenient
+   edit→package→run loop** ([0031](docs/findings/0031-convenient-texture-edit-to-in-game-loop.md)): `openwrath texture
+   override` (format-matched DDS encode + `<Texture><Payload>` authoring) → `mod build-local --install` → `mod
+   activate`/`deactivate`, plus a Blender **Export ▸ OpenWrath Texture Edit** operator. Stated-tier (new pixels,
+   in-game-acceptance gate), LOCAL-ONLY, not online-safe. **Remaining:** the user's in-game confirmation of a real
+   painted skin; the shareable **zero-EA diff** form; `OnDemandTexture`/file-backed routes.
 8. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **new-content authoring**
    (meshes via the re-pack gate, textures stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map
    corpus); **sound** (EALayer3, frontier). (Blender integration's viewer+exporter are now the critical-path item 6.)

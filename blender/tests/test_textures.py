@@ -254,7 +254,66 @@ def test_real_texture_payloads_bucketed():
     check(invalid == 0, "all real Texture payloads are valid DDS")
 
 
+# --------------------------------------------------------------------------- #
+# Anchor 3 — the texture EXPORT front-end (finding 0030 loop) is a thin shell-out
+# --------------------------------------------------------------------------- #
+
+class _FakeNode:
+    def __init__(self, type, image=None, label=""):
+        self.type = type
+        self.image = image
+        self.label = label
+
+
+class _FakeMat:
+    def __init__(self, name, nodes, use_nodes=True):
+        self.name = name
+        self.use_nodes = use_nodes
+        self.node_tree = type("NT", (), {"nodes": nodes})()
+
+
+def test_texture_edit_targets_maps_label_to_image():
+    print("[export] _texture_edit_targets maps the record label -> image")
+    from openwrath_import import _texture_edit_targets
+    img_a, img_b = object(), object()
+    mats = [
+        _FakeMat("OW_NURedeemer", [_FakeNode("TEX_IMAGE", img_a, "NURedeemer")]),
+        _FakeMat("OW_NURedeemer_D", [_FakeNode("TEX_IMAGE", img_b, "NURedeemer_D")]),
+        _FakeMat("OW_placeholder", [_FakeNode("TEX_IMAGE", None, "")]),   # grey placeholder: skipped
+        _FakeMat("SomeOtherMat", [_FakeNode("TEX_IMAGE", object(), "NotOurs")]),  # non-OW: skipped
+    ]
+    t = _texture_edit_targets(mats)
+    check(t == {"NURedeemer": img_a, "NURedeemer_D": img_b},
+          "only OW_ materials with a labelled image are returned")
+
+
+def test_texture_override_argv_is_the_single_cli_invocation():
+    print("[export] build_texture_override_argv (image + solid)")
+    from openwrath_import import cli
+    a = cli.build_texture_override_argv(["openwrath"], "/proj",
+                                        {"NURedeemer": "/t/NURedeemer.png"}, stream="static_common")
+    check(a == ["openwrath", "texture", "override", "/proj", "--stream", "static_common",
+                "--record", "NURedeemer", "--image", "/t/NURedeemer.png"],
+          "image mode: one --record/--image pair, through the one CLI builder")
+    b = cli.build_texture_override_argv(["openwrath"], "/proj",
+                                        {"NURedeemer": None, "NURedeemer_D": None}, solid="FF00FF")
+    check(b == ["openwrath", "texture", "override", "/proj", "--solid", "FF00FF",
+                "--record", "NURedeemer", "--record", "NURedeemer_D"],
+          "solid mode: --solid + bare --record list (no --image)")
+
+
+def test_resolve_openwrath_cmd_finds_repo_cli():
+    print("[export] resolve_openwrath_cmd locates <repo>/modkit/openwrath")
+    from openwrath_import import cli
+    cmd = cli.resolve_openwrath_cmd()
+    check(cmd[-1].endswith("modkit/openwrath") or cmd[-1] == "openwrath",
+          f"resolves to the modkit CLI (got {cmd})")
+
+
 def main():
+    test_texture_edit_targets_maps_label_to_image()
+    test_texture_override_argv_is_the_single_cli_invocation()
+    test_resolve_openwrath_cmd_finds_repo_cli()
     test_shader_names_synthetic()
     test_base_color_slot_precedence()
     test_material_status_buckets()

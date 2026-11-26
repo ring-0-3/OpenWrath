@@ -334,6 +334,15 @@ is earned by the current, BYO-clean pipeline — not by any edit to a bring-your
   `Texture` payload branch has no shipped instance (every shipped Texture carries a DDS); authoring *new* textures
   (the DXT re-encoder) is a future stated-tier phase, not exercised here.
 
+- **Editing a shipped texture (STATED-TIER — not in this byte matrix; finding
+  [0031](../findings/0031-convenient-texture-edit-to-in-game-loop.md)).** The convenient Blender edit→in-game loop
+  rides the above pass-through *backwards*: `openwrath texture override` encodes a **format-matched** DDS (external
+  encoder; `--solid` control) and authors it as a `<Texture><Payload>` record override, packaged by `mod build-local`
+  (the 0017/0030 overlay) and toggled by `mod activate`/`deactivate`. New/edited pixels have **no byte oracle** (EA's
+  DXT compressor isn't bit-reproducible) → **in-game acceptance only, never byte-exact.** The decidable sub-anchors
+  that *do* run without the game (DDS probe + FourCC/W×H/mip match vs the shipped record; payload round-trip verbatim
+  into the compiled `.asset`; SkuDef swap) are green; LOCAL-ONLY + not-online-safe.
+
 ## Not modeled (out of the 42)
 
 Types the decompiler encounters in shipped streams but the compiler does **not** register — e.g.

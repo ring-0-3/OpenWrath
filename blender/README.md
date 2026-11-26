@@ -122,6 +122,23 @@ two-process reload is the anti-bypass: the export process never sees the decoded
 proves Blender's datablocks (not a sidecar) carried every authoring attribute. It reuses
 `tools/mesh-repack-gate.py` (select/compare) and `tools/compare-stream.py` unchanged.
 
+## Texture edit → in-game (stated-tier; finding 0031)
+
+`File > Export > OpenWrath Texture Edit (→ in-game)` with a **textured** imported model:
+
+- edit the base-color image(s) in Blender's Image/UV editor (the importer tagged each with its
+  `Texture` record name);
+- the operator **saves the edited image** and shells out to `openwrath texture override <proj>`
+  — the modkit CLI owns all DDS encode / record / overlay work (the add-on forks none, invariant 3).
+  Set a mod-project dir; optional *Solid control (RRGGBB)* authors a synthetic DDS with no encoder.
+- then on the CLI: `openwrath mod build-local <proj> --install` → `openwrath mod activate <name>`
+  → launch KW (a **standard** map) → `openwrath mod deactivate <name>`.
+
+**Stated-tier, never byte-exact** (new pixels have no byte oracle — EA's DXT compressor isn't
+bit-reproducible). The overlay is **LOCAL-ONLY** and **not** inherently C&C-Online/replay-safe
+(it changes a stream's identity). Needs an external DDS encoder (nvcompress recommended) for real
+images; `--solid` needs none. See `docs/findings/0031-convenient-texture-edit-to-in-game-loop.md`.
+
 ## Tests
 
 ```bash

@@ -77,6 +77,32 @@ def resolve_bab_cmd(hint: str = "") -> list[str]:
     return ["bab-decompile"]
 
 
+def resolve_openwrath_cmd(hint: str = "") -> list[str]:
+    """Best-effort locate the ``openwrath`` modkit CLI (the texture/mod front-end).
+
+    Order: explicit hint -> ``openwrath`` on PATH -> ``<repo>/modkit/openwrath`` discovered by
+    walking up from this file. Returned as an argv list; the first element may need ``python3``
+    prepended by the caller if it is a plain script path on a host without the shebang honored —
+    but the file carries a ``#!/usr/bin/env python3`` shebang and is executable, so the bare path
+    works when launched via subprocess with the script executable."""
+    if hint:
+        return _split_cmd(hint)
+    found = shutil.which("openwrath")
+    if found:
+        return [found]
+    here = os.path.dirname(os.path.abspath(__file__))
+    cur = here
+    for _ in range(6):
+        cand = os.path.join(cur, "modkit", "openwrath")
+        if os.path.isfile(cand):
+            # Invoke via the current Python so it runs regardless of the exec bit / shebang
+            # resolution under Blender's bundled interpreter environment.
+            import sys as _sys
+            return [_sys.executable, cand]
+        cur = os.path.dirname(cur)
+    return ["openwrath"]
+
+
 # --------------------------------------------------------------------------- #
 # THE single source of truth for "how to invoke bab-decompile for semantic mesh".
 #
@@ -142,6 +168,48 @@ def build_compile_argv(bab_cmd, xml, *, dataroot, outdir, schema,
     argv += [f"-sc:{'true' if state_cache else 'false'}",
              f"-bc:{'true' if byte_cache else 'false'}"]
     return argv
+
+
+# --------------------------------------------------------------------------- #
+# THE single source of truth for "how to invoke `openwrath texture override`".
+#
+# The Blender export-texture operator saves each edited IMAGE and then shells out through this
+# ONE builder — the DDS encode, the Texture-record authoring, and the overlay packaging all live
+# in the modkit CLI (blender-integration.md / invariant 3: Blender is a thin front-end, it forks
+# no DDS/record/overlay logic). `record_to_image` maps a Texture record id -> the saved image
+# path; with `solid` set (RRGGBB) the images are ignored and every record is synthesized.
+# --------------------------------------------------------------------------- #
+
+def build_texture_override_argv(ow_cmd, project, record_to_image, *, stream=None, solid=None):
+    """Construct the argv for ``openwrath texture override``. ``ow_cmd`` is the launcher list
+    (e.g. ``[sys.executable, '/repo/modkit/openwrath']`` or ``['openwrath']``)."""
+    cmd = ow_cmd if isinstance(ow_cmd, list) else _split_cmd(ow_cmd)
+    argv = list(cmd) + ["texture", "override", str(project)]
+    if stream:
+        argv += ["--stream", stream]
+    if solid:
+        argv += ["--solid", solid]
+        for rec in record_to_image:
+            argv += ["--record", rec]
+    else:
+        for rec, img in record_to_image.items():
+            argv += ["--record", rec, "--image", str(img)]
+    return argv
+
+
+def run_texture_override(ow_cmd, project, record_to_image, *, stream=None, solid=None,
+                         timeout: int = 1800) -> subprocess.CompletedProcess:
+    """Spawn ``openwrath texture override`` via :func:`build_texture_override_argv` — the single
+    place the modkit CLI is invoked for texture authoring (symmetric to :func:`run_decode`)."""
+    argv = build_texture_override_argv(ow_cmd, project, record_to_image, stream=stream, solid=solid)
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                              env=_decode_env())
+    except FileNotFoundError as e:
+        raise DecompileError(
+            f"could not launch the openwrath CLI ({argv[0]!r}): {e}. "
+            f"Set the CLI path in the export dialog."
+        ) from e
 
 
 def compile_asset(bab_cmd, xml, *, dataroot, outdir, schema, ref_manifests=None,

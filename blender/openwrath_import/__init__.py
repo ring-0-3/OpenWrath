@@ -376,6 +376,86 @@ def export_all(dirpath, *, report=print):
 
 
 # --------------------------------------------------------------------------- #
+# Texture export (scene image edits -> the openwrath CLI -> a record overlay).
+#
+# The §4 frontier (finding 0030): editing a shipped unit texture. This is a THIN front-end —
+# it saves the edited IMAGE(s) and shells out to `openwrath texture override`, which owns every
+# byte of DDS encode / Texture-record / overlay packaging (invariant 3). Stated-tier: new pixels
+# have no byte oracle, the in-game render is the only acceptance.
+# --------------------------------------------------------------------------- #
+
+def _texture_edit_targets(materials):
+    """Map OpenWrath base-color materials -> ``{record_name: image}``.
+
+    The importer tags each Image Texture node with the ``Texture`` asset NAME on its ``.label``
+    (:func:`scene_builder.image_material`), so that label IS the record id to override. Only
+    ``OW_`` node materials with a labelled image datablock are returned (the grey placeholder
+    carries no image, so it is naturally skipped)."""
+    targets = {}
+    for mat in materials:
+        if not mat or not getattr(mat, "name", "").startswith("OW_") or not mat.use_nodes:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type == "TEX_IMAGE" and node.image is not None and node.label:
+                targets[node.label] = node.image
+    return targets
+
+
+def _save_image_png(img, path):
+    """Save a Blender image's CURRENT pixels (edits included) to ``path`` as PNG, restoring the
+    datablock's prior format/filepath. The record overlay's DDS is re-encoded from this PNG by the
+    CLI — Blender never writes the DDS (no pixel/format logic in the add-on)."""
+    prev_fmt = img.file_format
+    prev_fp = img.filepath_raw
+    try:
+        img.file_format = "PNG"
+        img.filepath_raw = path
+        img.save()
+    finally:
+        img.file_format = prev_fmt
+        img.filepath_raw = prev_fp
+
+
+def export_textures(project, materials, *, ow_cmd, stream=None, solid=None, out_dir=None,
+                    report=print):
+    """Save every OpenWrath base-color image found in ``materials`` and invoke
+    ``openwrath texture override`` to author a record overlay. Returns a summary string.
+
+    With ``solid`` (RRGGBB) the images are not saved — a synthetic control is authored for each
+    record (the 0029/0030 route, no encoder needed). ``out_dir`` defaults to a temp dir."""
+    targets = _texture_edit_targets(materials)
+    if not targets:
+        raise ValueError(
+            "no OpenWrath textured material found to export (an imported mesh's base-color image "
+            "carries the record name on its Image Texture node label). Import a model, make sure "
+            "it imported 'textured', edit the image, then export.")
+    record_to_image = {}
+    if not solid:
+        out_dir = out_dir or tempfile.mkdtemp(prefix="openwrath_texedit_")
+        for rec, img in sorted(targets.items()):
+            png = os.path.join(out_dir, rec + ".png")
+            _save_image_png(img, png)
+            record_to_image[rec] = png
+            report(f"saved edited image for '{rec}' -> {os.path.basename(png)}")
+    else:
+        record_to_image = {rec: None for rec in sorted(targets)}
+
+    report(f"authoring {len(record_to_image)} texture override(s) into {project} "
+           + (f"(solid {solid})" if solid else "(via external DDS encoder)"))
+    proc = cli.run_texture_override(ow_cmd, project, record_to_image, stream=stream, solid=solid)
+    tail = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    for ln in tail.splitlines():
+        report(ln)
+    if proc.returncode != 0:
+        raise cli.DecompileError(
+            f"`openwrath texture override` failed (rc={proc.returncode}). See the log above. "
+            f"(No DDS encoder? install nvcompress, or use the Solid control option.)")
+    return (f"Authored {len(record_to_image)} texture override(s) [{', '.join(sorted(targets))}] "
+            f"into {os.path.basename(str(project))}. Next: build-local + activate (see log). "
+            f"Stated-tier — in-game render is the only acceptance.")
+
+
+# --------------------------------------------------------------------------- #
 # Blender operator + menu
 # --------------------------------------------------------------------------- #
 
@@ -476,6 +556,74 @@ def _register_operator():
             self.report({"INFO"}, summary)
             return {"FINISHED"}
 
+    class OPENWRATH_OT_export_texture(bpy.types.Operator):
+        """Edit a unit's texture in-game: save the edited base-color image(s) and author a
+        LOCAL-ONLY `static_mod` record overlay via the openwrath CLI (finding 0030 route).
+
+        STATED-TIER: new pixels have no byte oracle — the in-game render is the only acceptance,
+        NOT a byte compare. A record overlay changes stream identity → NOT inherently
+        C&C-Online/replay-safe. The CLI owns all DDS/record/overlay work; this operator only
+        saves the image and shells out (invariant 3)."""
+        bl_idname = "openwrath.export_texture"
+        bl_label = "Export OpenWrath Texture Edit"
+        bl_options = {"REGISTER"}
+
+        project: StringProperty(
+            name="Mod project dir",
+            description="Folder to author the Texture overrides into (scaffolded if new). "
+                        "Then: openwrath mod build-local <project> --install; mod activate.",
+            default="", subtype="DIR_PATH",
+        )
+        openwrath_cmd: StringProperty(
+            name="openwrath CLI",
+            description="Launcher for the openwrath modkit CLI. Blank = auto-detect "
+                        "(<repo>/modkit/openwrath).",
+            default="",
+        )
+        stream: StringProperty(
+            name="Source stream",
+            description="Base stream to read each record's shipped format from",
+            default="static_common",
+        )
+        active_only: BoolProperty(
+            name="Active object only",
+            description="Export only the active object's textures (default). Off: every "
+                        "OpenWrath-textured material in the scene.",
+            default=True,
+        )
+        solid: StringProperty(
+            name="Solid control (RRGGBB)",
+            description="Optional: author a synthetic SOLID-color DDS for each record instead of "
+                        "the edited image (the proven 0029/0030 control; needs no DDS encoder). "
+                        "Blank = encode the real edited image.",
+            default="",
+        )
+
+        def invoke(self, context, event):
+            return context.window_manager.invoke_props_dialog(self, width=480)
+
+        def execute(self, context):
+            if not self.project:
+                self.report({"ERROR"}, "Set a mod project directory first.")
+                return {"CANCELLED"}
+            ow_cmd = cli.resolve_openwrath_cmd(self.openwrath_cmd)
+            if self.active_only and context.active_object is not None:
+                mats = [s.material for s in context.active_object.material_slots]
+            else:
+                import bpy as _bpy
+                mats = list(_bpy.data.materials)
+            try:
+                summary = export_textures(
+                    bpy.path.abspath(self.project), mats, ow_cmd=ow_cmd,
+                    stream=self.stream or None, solid=self.solid or None,
+                    report=lambda m: self.report({"INFO"}, m),
+                )
+            except Exception as e:
+                self.report({"ERROR"}, f"OpenWrath texture export failed: {e}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, summary)
+            return {"FINISHED"}
+
     def menu_func_import(self, context):
         self.layout.operator(OPENWRATH_OT_import_model.bl_idname,
                              text="OpenWrath Model (.xml)")
@@ -483,9 +631,12 @@ def _register_operator():
     def menu_func_export(self, context):
         self.layout.operator(OPENWRATH_OT_export_model.bl_idname,
                              text="OpenWrath Asset (.xml)")
+        self.layout.operator(OPENWRATH_OT_export_texture.bl_idname,
+                             text="OpenWrath Texture Edit (→ in-game)")
 
     return (OPENWRATH_OT_import_model, menu_func_import,
-            OPENWRATH_OT_export_model, menu_func_export)
+            OPENWRATH_OT_export_model, menu_func_export,
+            OPENWRATH_OT_export_texture)
 
 
 _classes = []
@@ -496,8 +647,9 @@ _menu_func_export = None
 def register():
     import bpy
     global _classes, _menu_func_import, _menu_func_export
-    imp_op, _menu_func_import, exp_op, _menu_func_export = _register_operator()
-    _classes = [imp_op, exp_op]
+    (imp_op, _menu_func_import, exp_op, _menu_func_export,
+     tex_op) = _register_operator()
+    _classes = [imp_op, exp_op, tex_op]
     for c in _classes:
         bpy.utils.register_class(c)
     bpy.types.TOPBAR_MT_file_import.append(_menu_func_import)
