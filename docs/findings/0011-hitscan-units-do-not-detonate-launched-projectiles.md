@@ -4,11 +4,17 @@
 Opened 2026-11-21. (§4 frontier — "does it launch" is in-game-only; this is now settled by direct observation.)
 
 > ## THE FINDING (do not re-derive — supersedes every "engine coupling / impossible" conclusion below)
-> A `ProjectileNugget` resolves its **`ProjectileTemplate`** (the object to spawn) and its **`WarheadTemplate`** (what
-> detonates on impact) by **forward lookup during the engine's single sequential stream-load pass.** Each binding
-> succeeds **only if that template appears *before* the referencing weapon in the compiled stream's manifest order**;
-> a template ordered *after* the weapon binds to **null, silently** — the weapon fires its FX and any weapon-local
-> nuggets (e.g. `DamageNugget`) but the forward-referenced piece does nothing. The two bindings are **independent**:
+> **Observed rule (decidable):** a `ProjectileNugget`'s **`ProjectileTemplate`** (the object to spawn) and
+> **`WarheadTemplate`** (what detonates on impact) take effect **only if each appears *before* the referencing weapon in
+> the compiled stream's manifest order.** A template ordered *after* the weapon produces **no spawn / no detonation**,
+> silently — the weapon still fires its FX and any weapon-local nuggets (e.g. `DamageNugget`). The two are
+> **independent** (projectile-order → spawn, warhead-order → detonation). Established the usual way for this project:
+> the in-game build matrix below + a scan of the shipped manifest's own reference graph.
+>
+> *Mechanism (hypothesis):* the behaviour is consistent with these references being bound to a direct pointer
+> **eagerly, in manifest order, at load** (a target not yet instantiated → null), whereas textures behave as if
+> resolved order-independently. That "why" is an inference from the observed behaviour + the data layout — a documented
+> guess, not an established fact.
 >
 > | ProjectileTemplate order | WarheadTemplate order | in-game result |
 > |---|---|---|
