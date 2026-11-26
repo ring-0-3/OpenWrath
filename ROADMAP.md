@@ -40,14 +40,34 @@ strength: finish what's decidable, then validate the keystone, then the frontier
    **channel-0** bone (weights are deform-only), restoring 4-fold symmetry with a per-vertex seam-continuity gate.
    **Stated-tier** (scene assembly has no byte oracle), with a reported soft-blend seam residual; the earlier
    centroid-level "verified" was corrected to per-vertex. Verified in-GUI on the NOD Redeemer (quadruped, 99 bones).
-   Next on this thread: the **exporter** (item 6, gated on the 0025 re-pack gate) + semantic `W3DAnimation` decode
-   (keyframes, for live deform / the soft-blend residual).
-6. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
+   Next on this thread: **textured viewer** (item 6a) → the **exporter + its byte-exact roundtrip gate** (item 6b) +
+   semantic `W3DAnimation` decode (keyframes, for live deform / the soft-blend residual).
+6. 📋 **Blender round-trip tier — CRITICAL PATH (reliability keystone at the ecosystem edge).** An exporter is a
+   *second packer path the oracle can't see* unless its correctness is made decidable; this item keeps the
+   byte-exact oracle reaching all the way to Blender, the same discipline that guards the rest of the toolchain.
+   - **6a. Textured viewer** (in flight). Resolve each mesh's `<FXShader>` texture refs → decode the referenced
+     `Texture` assets → base64-decode their shipped-DDS `<Payload>` (finding 0024) → UV-mapped Blender materials,
+     replacing the grey placeholder. Stated-tier display, with the decidable sub-anchors (names parse; each payload is
+     a valid DDS). Unblocks the visual half of texture editing. → finding 0027.
+   - **6b. Exporter + the Blender byte-exact roundtrip gate.** The **acceptance test, not a footnote**: Blender
+     **import → export → recompile → byte-compare to shipped** must be **byte-exact for unmodified models (geometry
+     *and* textures)**, reusing the existing 0025 `mesh-repack-gate` / `compare-stream.py` oracle *with Blender now in
+     the loop*. The CLI gate (0025) already proves `decode ∘ packer == shipped` 300/300; this gate proves the added
+     delta — `decode ∘ Blender-scene ∘ export ∘ packer == shipped` — i.e. that Blender preserves every authoring
+     attribute losslessly (vertex order/identity, normals/tangents/binormals, bone-influence channel order incl. the
+     channel-0 reference bone + the weight-0 unreferenced-bone channel, vertex colours, the full `<FXShader>` block,
+     hierarchy, container). Realistic design: carry the raw decoded attributes on the datablocks and round-trip an
+     *untouched* mesh straight back out (shipped textures already pass through byte-exact, 0024). The gate **bounds
+     what the exporter may emit**: the 0025-unverified packer paths (half-float, Xenon/big-endian, >2 blend weights)
+     stay off-limits until a corpus exercises them. **Edited** geometry/textures remain the §4 **stated tier**
+     ("loads + renders"), never byte-exact — the gate is for *unmodified* round-trips. → a dated finding when GREEN.
+7. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
    path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
    modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.
-7. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **Blender integration**
-   proper (the viewer shipped in item 5 → **exporter**, gated on 3/4); **new-content authoring** (meshes via the re-pack gate, textures
-   stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map corpus); **sound** (EALayer3, frontier).
+   (This is also the in-game delivery route for **edited** textures — the stated-tier half of "edit textures".)
+8. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **new-content authoring**
+   (meshes via the re-pack gate, textures stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map
+   corpus); **sound** (EALayer3, frontier). (Blender integration's viewer+exporter are now the critical-path item 6.)
    Detail in the Content-pipeline and Platform sections below.
 
 **Tier discipline past the byte-exact surface:** authoring / new content is the §4 frontier — use a *decidable gate*
@@ -363,15 +383,36 @@ anyone can *check*, not merely trust.
   decode; faithful-not-identical re-encode) — later pillars, each its own dedicated run.
 - 📋 **Art / asset compilers** for new-content mods — the big build. Unlocks making *new* assets, not just editing
   existing ones; a separate effort from the data toolchain above.
-- 📋 **Blender integration** (viewer → importer → exporter). A Blender add-on that is a **thin front-end to the
-  OpenWrath CLI** — scene ⇄ W3X authoring XML — so format knowledge never forks into a plugin (§3 at ecosystem
-  scale). Needs the **authoring/semantic tier**, not just round-trip pass-through: a semantic vertex decode (the
-  base64 packed buffer is not editable geometry) plus `W3DHierarchy`→armature / `W3DContainer`→grouping (the next
-  art milestone feeds this directly). Gated on the **re-pack equality test** — `semantic-decode ∘ W3DMeshProcessor
-  == shipped bytes` — which keeps a *decidable* oracle on this frontier and validates the (currently unverified)
-  packer before any exporter is trusted; authored geometry is a **stated tier** ("loads + renders"), never claimed
-  byte-exact (§4). Ship the read-only viewer/importer first. Design:
+- 🔧 **Blender integration** (viewer → importer → exporter) — **CRITICAL PATH (go-forward item 6).** A Blender
+  add-on that is a **thin front-end to the OpenWrath CLI** — scene ⇄ W3X authoring XML — so format knowledge never
+  forks into a plugin (§3 at ecosystem scale). Needs the **authoring/semantic tier**, not just round-trip
+  pass-through: a semantic vertex decode (the base64 packed buffer is not editable geometry) plus
+  `W3DHierarchy`→armature / `W3DContainer`→grouping. The CLI **re-pack equality test** —
+  `semantic-decode ∘ W3DMeshProcessor == shipped bytes` — is **done + green** (0025); the viewer shipped (0026).
+  **The exporter's acceptance gate is the Blender byte-exact roundtrip** — `decode ∘ Blender-scene ∘ export ∘ packer
+  == shipped` for **unmodified models (geometry + textures)**, reusing the 0025 oracle with Blender in the loop. It
+  proves Blender preserves every authoring attribute losslessly (the project's reliability keystone at the ecosystem
+  edge); it is an acceptance test, **not** a mere regression guard. Authored/edited geometry is a **stated tier**
+  ("loads + renders"), never byte-exact (§4); the gate bounds the exporter to the 0025-verified packer paths. Design:
   **[docs/design/blender-integration.md](docs/design/blender-integration.md)**.
+  - 📋 **(perf, deferred — not now) Speed up `openwrath blender view` / `model` decode.** `_decode_model` spawns a
+    **separate `bab-decompile` (dotnet) process per asset** — container + hierarchy + every mesh + every collision
+    box + every texture — so a full model is dozens of cold .NET starts (the NOD Redeemer: ~34 meshes + collision
+    boxes + textures), which is the dominant wall-clock cost. Correctness is unaffected; it's just slow. Optimize by
+    **batching into far fewer invocations** — e.g. one `decompile-stream` pass per needed type (the verb already
+    supports `--type` + `--semantic-mesh`, decoding all instances of a type at once) instead of one `--only <name>`
+    per asset, or a single warm/long-lived decode process. Profile first to confirm dotnet-startup is the cost before
+    optimizing. Keep the single `build_decode_argv` source of truth (invariant 3).
+  - 📋 **(viewer, stated-tier, optional) House/team-color preview.** In-game a player's **house color** recolors the
+    masked regions of a unit (the NOD-red accents → blue/green/… per player) at **render time**, via the `Objects*.fx`
+    shader + a team-color **mask** (no dedicated mask slot in the shader → the mask rides a channel of an existing
+    texture, most likely the diffuse alpha — standard SAGE practice). The colour itself is a **per-player runtime
+    constant the engine feeds the shader — NOT stored in the model** (evidence: shaders carry a `HouseColorPulse`
+    constant but no stored colour value). The viewer today correctly shows the **default base diffuse** (red for NOD);
+    a future option could preview a chosen house colour by implementing the shader's house-colour path in Blender —
+    cosmetic, **stated-tier** (full `FXShaderMaterial` semantics don't map cleanly, per the design doc). **Irrelevant
+    to the byte-exact exporter:** team colour isn't in the model bytes; only static shader constants like
+    `HouseColorPulse` are, and those already round-trip inside the `<FXShader>` block.
 - 📋 **Community mods as frontier existence-proofs** (research strategy). The KW community has shipped content
   OpenWrath can't yet produce — 4K/HD **texture** add-ons, total-conversion mods with **new geometry**, and
   **particle/FX** patches (e.g. reworked laser effects). Each proves the retail engine *accepts* a kind of non-EA

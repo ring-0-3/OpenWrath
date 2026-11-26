@@ -88,8 +88,20 @@ So the current trajectory (Container/Hierarchy) is **directly on the Blender pat
 2. **The re-pack equality gate.** Prove `semantic-decode ∘ W3DMeshProcessor == shipped bytes` on a sampled corpus.
    This both validates the processor and unlocks a trustworthy exporter.
 3. **Exporter.** Blender scene → authoring XML → compile. Gated on (2). Authored geometry is the **stated** tier
-   ("loads + renders"), never claimed byte-exact; a round-trip of an *unmodified* imported asset should still
-   pass the byte-exact / re-pack check as a regression guard.
+   ("loads + renders"), never claimed byte-exact.
+
+   **The exporter's acceptance gate (critical path, not a footnote): the Blender byte-exact roundtrip.** A round-trip
+   of an *unmodified* imported asset — `decode ∘ Blender-scene ∘ export ∘ packer` — MUST byte-compare **byte-exact to
+   shipped** (geometry *and* textures; shipped textures already pass through byte-exact, finding 0024). This reuses the
+   (2) re-pack oracle (`tools/mesh-repack-gate.sh` / `compare-stream.py`) with **Blender now in the loop**, so it
+   proves the one thing (2) cannot: that the Blender scene preserves every authoring attribute losslessly — vertex
+   order/identity, normals/tangents/binormals, bone-influence channel order (incl. 0025's channel-0 reference bone and
+   the weight-0 unreferenced-bone channel), vertex colours, the full `<FXShader>` block, hierarchy, and container.
+   Without this gate an exporter is a *second packer path the oracle can't see* (§3 at ecosystem scale); with it, the
+   byte-exact oracle reaches all the way to Blender. Realistic design: stash the raw decoded attributes on the Blender
+   datablocks and round-trip an untouched mesh straight back out; edited meshes go through reconstruction (stated
+   tier). The gate also **bounds what the exporter may emit** — the 0025-unverified packer paths (half-float, Xenon,
+   >2 blend weights) are off-limits until a corpus exercises them.
 
 ## Boundaries / non-goals
 
