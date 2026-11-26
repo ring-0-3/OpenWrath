@@ -315,6 +315,31 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     recipient-side assembler) is future work, mirroring `diff-plus-assemble-at-install`.
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
+- 🔧 **Modkit DX / linux-port gaps** (hit while building a record-overlay texture + instant-build test, 2026-11-26):
+  - 📋 **Opaque `FormatException` compiling some expression-macro assets** (diagnose; the evaluator is NOT disabled).
+    Certain SDK assets fail to compile with a bare `System.FormatException: Index (zero based) must be … less than the
+    size of the argument list` — no file/line/asset named. Observed on the modular epic Nod structures
+    `MG_NOD_DisruptionGenerator` / `MG_NOD_TemplePrime` / `MG_NOD_TiberiumForge` (the Warmech Facility and
+    `NODMetaUnit`/Redeemer compile fine). **⚠ Do not misread this as "the evaluator is disabled" (present-but-unfed
+    trap, findings [0008](docs/findings/0008-xinclude-xpointer-not-honored.md)/[0015](docs/findings/0015-standalone-overlay-override-needs-sliced-inheritfrom-base.md)
+    + blind-spots §"present-but-unfed"):** the native `ExpressionEvaluator` **is present and wired**
+    (`ExpressionEvaluatorWrapper` returns `new ExpressionEvaluator(document)`; `$(NAME)`/`=$DEFINE*2+5` substitution),
+    and XInclude is handled by the custom `ResolveXIncludes` — the startup "Expressions/xi:include are disabled"
+    messages (Mvp.Xml fails to load) are **benign**, not the cause. So the real question is **what input these specific
+    assets feed the present evaluator** that trips a `String.Format` arg-count mismatch (a sliced/missing `#define`, a
+    macro form the port mishandles) — a diagnosis task, NOT "port/enable the evaluator". Impact: those assets can't be
+    modded on Linux today. Fix: find the failing macro/define for the named assets (and whether it's the 0015
+    sliced-`#define` class), **and** catch the `FormatException` to emit a per-asset `file:line` + the offending
+    expression instead of a bare stack trace.
+  - 📋 **`compile_source` error reporting hides the real exception.** On a compile failure it does
+    `sys.exit(f"…:\n{r.stdout[-800:]}")` — a blind tail of stdout only, which captured the stack-trace *tail* (even
+    mangling `BinaryAssetBuilder`→`aryAssetBuilder` at the wrap) but **not** the exception message, and **nothing from
+    stderr**. The actual cause was only visible by re-running `Debug/BinaryAssetBuilder.dll` by hand. Fix: surface the
+    first `Error:`/`Exception` line from stdout+stderr, not a fixed-size tail.
+  - 📋 **No one-command mod activate/deactivate.** Activation is still a manual master-SkuDef `add-config` edit, and
+    overlay families are mutually exclusive (0017) so testing a second `static_mod` mod means hand-swapping the
+    active one out and back. An `openwrath mod activate/deactivate <name>` (backup + swap the `static_mod` slot,
+    like the ad-hoc activate/restore scripts written for this test) would close the edit→build→**run** loop.
 
 ## Platform & extensibility
 OpenWrath is meant to be *built on*. Each item rests on the same idea as the verification gate: correctness
