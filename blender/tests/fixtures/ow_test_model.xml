@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AssetDeclaration xmlns="uri:ea.com:eala:asset">
+  <W3DContainer id="ow_test_model" Hierarchy="ow_test_skel">
+    <SubObject BoneIndex="0" SubObjectID="cube">
+      <RenderObject><Mesh>ow_test_cube</Mesh></RenderObject>
+    </SubObject>
+    <SubObject BoneIndex="1" SubObjectID="box">
+      <RenderObject><CollisionBox>ow_test_box</CollisionBox></RenderObject>
+    </SubObject>
+  </W3DContainer>
+</AssetDeclaration>
