@@ -335,6 +335,18 @@ anyone can *check*, not merely trust.
   **[docs/design/multi-schema-interop.md](docs/design/multi-schema-interop.md)**. Motivating findings:
   [0009](docs/findings/0009-decompiler-logiccommand-instance-read-desync.md) /
   [0010](docs/findings/0010-insert-must-match-target-stream-type-schema-hash.md).
+  - 📋 **Characterize the R23 / R24 / R25 community patches, then support them (later).** The community "R-series"
+    patches run the game at a version **past retail 1.3**, and real mods target them (the 4K texture pack targets
+    **R25**, not 1.3 — finding [0021](docs/findings/0021-community-mod-texture-geometry-mechanism-recon.md), and that
+    version gap is why its loose-file route is *attested-not-tested* on 1.3). To make OpenWrath compatible — read/author
+    KW data for R23/24/25 and support mods built against them — first **characterize each patch**, don't guess: diff the
+    patch's streams/manifests against retail 1.3 to record (a) which streams/records change, (b) the per-type
+    **TypeHash** drift (the [0016](docs/findings/0016-static-mod-stream-is-complete-replacement-not-overlay.md)
+    version-blindness class — a wrong TypeHash is byte-exact-green yet crash-in-game), and (c) any new/changed record
+    types or schema. Version-stamp the result (invariant 4) and feed it into the **TypeHash-keyed layout registry**
+    above (default + an additive, derive-and-verify set of supported versions). Discipline: characterize the
+    *mechanism*, reimplement clean, ship zero patch/EA content; each patch → a dated finding version-stamping its
+    deltas. **For later** — the retail-1.3 byte-exact surface + the Blender/texture frontier come first.
 
 ## Content pipeline
 - ✅ Mod pipeline utilities in `pytools/` (BIG4 archive, RefPack, stream/manifest inspect + splice).
