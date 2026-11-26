@@ -115,6 +115,51 @@ def build_decode_argv(bab_cmd, manifest, outdir, *, subcommand="decompile-stream
     return argv
 
 
+# --------------------------------------------------------------------------- #
+# THE single source of truth for "how to invoke the compiler (BinaryAssetBuilder)".
+#
+# The exporter's round-trip gate (tools/blender-roundtrip-gate.sh) and any consumer that
+# recompiles exported authoring XML route through build_compile_argv() so the compile
+# command is constructed in exactly ONE place — mirroring build_decode_argv (CLAUDE.md
+# invariant 3). The flags are identical to tools/mesh-repack-gate.sh's recompile step
+# (-dr/-od/-sp/-rm, -sc:false -bc:false), so the exporter drives the SAME packer the
+# 0025 re-pack gate validated — never a second compile path.
+# --------------------------------------------------------------------------- #
+
+def build_compile_argv(bab_cmd, xml, *, dataroot, outdir, schema,
+                       ref_manifests=None, state_cache=False, byte_cache=False) -> list:
+    """Construct the argv for a BinaryAssetBuilder compile of a single authoring XML.
+
+    ``bab_cmd`` is the launcher (list, e.g. ``["dotnet", ".../BinaryAssetBuilder.dll"]``).
+    ``ref_manifests`` may be a list or a ';'-joined string. ``state_cache`` / ``byte_cache``
+    map to ``-sc`` / ``-bc`` (both off for a clean one-shot compile, as the gate uses)."""
+    cmd = bab_cmd if isinstance(bab_cmd, list) else _split_cmd(bab_cmd)
+    argv = list(cmd) + [xml, f"-dr:{dataroot}", f"-od:{outdir}", f"-sp:{schema}"]
+    if ref_manifests:
+        rm = ref_manifests if isinstance(ref_manifests, str) else ";".join(ref_manifests)
+        if rm:
+            argv.append(f"-rm:{rm}")
+    argv += [f"-sc:{'true' if state_cache else 'false'}",
+             f"-bc:{'true' if byte_cache else 'false'}"]
+    return argv
+
+
+def compile_asset(bab_cmd, xml, *, dataroot, outdir, schema, ref_manifests=None,
+                  timeout: int = 600) -> subprocess.CompletedProcess:
+    """Compile one authoring XML via :func:`build_compile_argv` / the shared env. The single
+    place the compiler subprocess is spawned (symmetric to :func:`run_decode`)."""
+    os.makedirs(outdir, exist_ok=True)
+    argv = build_compile_argv(bab_cmd, xml, dataroot=dataroot, outdir=outdir,
+                              schema=schema, ref_manifests=ref_manifests)
+    try:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, env=_decode_env())
+    except FileNotFoundError as e:
+        raise DecompileError(
+            f"could not launch the compiler ({argv[0]!r}): {e}."
+        ) from e
+
+
 def _decode_env() -> dict:
     env = dict(os.environ)
     env.setdefault("DOTNET_ROLL_FORWARD", "LatestMajor")
@@ -188,7 +233,22 @@ def _main(argv=None) -> int:
     d.add_argument("--rm", help="';'-separated reference manifests")
     d.add_argument("--stringhashes")
     d.add_argument("--no-semantic-mesh", action="store_true")
+
+    c = sub.add_parser("compile", help="compile one authoring XML via BinaryAssetBuilder")
+    c.add_argument("--bab", required=True, help="launcher, e.g. 'dotnet /path/BinaryAssetBuilder.dll'")
+    c.add_argument("--xml", required=True)
+    c.add_argument("--dataroot", required=True)
+    c.add_argument("--outdir", required=True)
+    c.add_argument("--schema", required=True)
+    c.add_argument("--rm", help="';'-separated reference manifests")
     a = p.parse_args(argv)
+
+    if a.cmd == "compile":
+        proc = compile_asset(a.bab, a.xml, dataroot=a.dataroot, outdir=a.outdir,
+                             schema=a.schema, ref_manifests=a.rm)
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stdout[-2000:] + proc.stderr[-2000:])
+        return proc.returncode
 
     os.makedirs(a.outdir, exist_ok=True)
     cmd = build_decode_argv(

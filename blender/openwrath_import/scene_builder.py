@@ -20,6 +20,125 @@ from . import w3x_xml as wx
 
 
 # --------------------------------------------------------------------------- #
+# Lossless authoring stash (the exporter's byte-exact round-trip foundation)
+# --------------------------------------------------------------------------- #
+
+# Custom-property keys written onto Blender datablocks. These are ID-properties, so they
+# are SAVED INTO THE .blend and survive a save/reload — which is exactly what makes the
+# round-trip gate meaningful: the exporter reads the stash back from a freshly-reloaded
+# scene (never the decoded XML file), so a green proves Blender itself preserved the
+# authoring attributes losslessly (docs/design/blender-integration.md, staging step 3).
+STASH_KEY = "openwrath_capture"      # JSON of the verbatim wx.AssetCapture
+STASH_TYPE = "openwrath_asset_type"  # "W3DMesh" / "W3DHierarchy" / ...
+STASH_ID = "openwrath_asset_id"      # the asset's id attribute
+# Import-time fingerprint of a GRAPH datablock's canonical editable state (armature bones /
+# collision-box transform / container membership+bindings). Hashed right after the importer
+# builds the datablock and stashed beside the capture; the exporter recomputes it from the
+# (reloaded) datablock and compares — match ⇒ unmodified (emit verbatim stash, byte-exact),
+# differ ⇒ edited (drop to stated, never byte-exact). This gives the graph types the same
+# edit-detection discipline meshes already have via compare_mesh_geometry — the honesty rule
+# (verification-blind-spots §4: never report a stated tier as byte-exact). It is bit-exact by
+# construction: the same function reads the SAME float32 properties at import and at export,
+# and a .blend save/reload preserves them exactly, so a clean reload CANNOT read as edited.
+STASH_FINGERPRINT = "openwrath_fingerprint"
+# When a mesh is imported as part of a full model its vertices are BAKED into model space
+# (bind-pose assembly, _assemble); these object props let the exporter reproduce that same
+# transform so it can tell "unmodified (assembled)" from a genuine user edit.
+ASSEMBLED_KEY = "openwrath_assembled"    # 1 if build_mesh baked bind-pose assembly into verts
+BONE_INDEX_KEY = "openwrath_bone_index"  # the sub-object's bone index used for rigid placement
+
+
+def stash_capture(idblock, cap) -> None:
+    """Write a verbatim asset capture onto a Blender ID datablock (mesh data / armature
+    data / object / collection). Pure scene bookkeeping — no byte/format logic; the capture
+    was produced by the one XML reader (:mod:`w3x_xml`)."""
+    if cap is None:
+        return
+    idblock[STASH_KEY] = wx.capture_to_json(cap)
+    idblock[STASH_TYPE] = cap.asset_type
+    idblock[STASH_ID] = cap.asset_id
+
+
+# --------------------------------------------------------------------------- #
+# Graph-type edit-detection fingerprints (hashed at import, re-checked at export)
+# --------------------------------------------------------------------------- #
+
+def _fingerprint(parts) -> str:
+    """Hash a canonical sequence of floats / ints / strings. Floats are hashed by their exact
+    float32 bit pattern (the same basis `scene_reader._f32` uses), so a .blend reload — which
+    preserves float32 — reproduces the hash exactly (no false 'edited')."""
+    import hashlib
+    import struct
+    h = hashlib.sha256()
+    for p in parts:
+        if isinstance(p, bool):
+            h.update(b"\x01" if p else b"\x00")
+        elif isinstance(p, float):
+            h.update(struct.pack("<f", p))
+        elif isinstance(p, int):
+            h.update(struct.pack("<q", p))
+        else:
+            h.update(str(p).encode("utf-8"))
+        h.update(b"\x1f")  # field separator
+    return h.hexdigest()
+
+
+def fingerprint_hierarchy(arm_data) -> str:
+    """Canonical state of an armature datablock: each bone's name, parent name, and rest
+    matrix (``matrix_local``, 16 float32). A moved/renamed/re-parented bone changes it."""
+    parts = []
+    for b in arm_data.bones:
+        parts.append(b.name)
+        parts.append(b.parent.name if b.parent else "")
+        for row in b.matrix_local:
+            parts.extend(float(x) for x in row)
+    return _fingerprint(parts)
+
+
+def fingerprint_collision_box(empty) -> str:
+    """Canonical state of a collision-box empty: its local matrix (``matrix_basis``, 16
+    float32) and parent name. A moved/resized empty changes it."""
+    parts = [empty.parent.name if empty.parent else ""]
+    for row in empty.matrix_basis:
+        parts.extend(float(x) for x in row)
+    return _fingerprint(parts)
+
+
+def fingerprint_collection(coll) -> str:
+    """Canonical state of a container collection: its membership + per-object binding
+    (object name, OpenWrath bone index, stashed asset id), order-independent. Adding/removing
+    an object or rebinding a sub-object changes it."""
+    items = sorted(
+        (o.name, int(o.get(BONE_INDEX_KEY, -1)), str(o.get(STASH_ID, "")))
+        for o in coll.all_objects
+    )
+    parts = []
+    for name, bi, sid in items:
+        parts += [name, bi, sid]
+    return _fingerprint(parts)
+
+
+def fingerprint_for(asset_type, idblock):
+    """Recompute the fingerprint for a graph datablock by type (``idblock`` is the armature
+    DATA / the empty OBJECT / the collection — the same handle the importer hashed). Returns
+    None for types without a fingerprint (e.g. W3DMesh, which uses the semantic coupling)."""
+    if asset_type == "W3DHierarchy":
+        return fingerprint_hierarchy(idblock)
+    if asset_type == "W3DCollisionBox":
+        return fingerprint_collision_box(idblock)
+    if asset_type == "W3DContainer":
+        return fingerprint_collection(idblock)
+    return None
+
+
+def stash_fingerprint(idblock, asset_type) -> None:
+    """Compute + store the import-time fingerprint for a graph datablock (no-op otherwise)."""
+    fp = fingerprint_for(asset_type, idblock)
+    if fp is not None:
+        idblock[STASH_FINGERPRINT] = fp
+
+
+# --------------------------------------------------------------------------- #
 # Mesh
 # --------------------------------------------------------------------------- #
 
@@ -76,6 +195,25 @@ def _bone_name_for(bone_id: int, bone_names: Optional[dict[int, str]]) -> str:
     if bone_names and bone_id in bone_names:
         return bone_names[bone_id]
     return f"bone_{bone_id}"
+
+
+def bone_name_map(hier: wx.Hierarchy) -> dict[int, str]:
+    """Deterministic ``{pivot_index: unique_bone_name}`` from a hierarchy — the names the
+    armature's bones (and therefore the meshes' vertex groups) get. Collisions on the raw
+    pivot name are disambiguated with a ``.NNN`` suffix. The ONE source of this mapping, so
+    the exporter can invert it (vertex-group name → bone id) exactly as the importer built it."""
+    names: dict[int, str] = {}
+    used: set[str] = set()
+    for i, p in enumerate(hier.pivots):
+        base = p.name or f"pivot_{i}"
+        name = base
+        n = 1
+        while name in used:
+            name = f"{base}.{n:03d}"
+            n += 1
+        used.add(name)
+        names[i] = name
+    return names
 
 
 def reference_bone(mesh: wx.MeshGeometry, vi: int, default: int) -> int:
@@ -141,7 +279,8 @@ def build_mesh(mesh: wx.MeshGeometry,
                bone_names: Optional[dict[int, str]] = None,
                worlds: Optional[list] = None,
                bone_index: int = 0,
-               material: Optional[bpy.types.Material] = None) -> bpy.types.Object:
+               material: Optional[bpy.types.Material] = None,
+               capture=None) -> bpy.types.Object:
     """Build a Blender object from decoded geometry. Returns the object (unlinked
     scene-side if ``collection`` is None — caller links it).
 
@@ -151,7 +290,10 @@ def build_mesh(mesh: wx.MeshGeometry,
     stay exactly as decoded — bit-exact to the XML.
 
     ``material`` (e.g. from :func:`image_material`) is applied when given; otherwise the
-    shared grey placeholder is used — the honest fallback for an OnDemand/unresolved slot."""
+    shared grey placeholder is used — the honest fallback for an OnDemand/unresolved slot.
+
+    ``capture`` (a :class:`w3x_xml.AssetCapture` of this W3DMesh) is stashed on the mesh
+    datablock so the exporter can re-emit it byte-exact after a .blend save/reload."""
     if worlds is not None:
         positions, normals = _assemble(mesh, worlds, bone_index)
     else:
@@ -160,6 +302,9 @@ def build_mesh(mesh: wx.MeshGeometry,
     me = bpy.data.meshes.new(mesh.name)
     me.from_pydata([list(p) for p in positions], [], [list(t) for t in mesh.triangles])
     me.update()
+
+    # Stash the verbatim authoring capture on the mesh datablock (survives .blend reload).
+    stash_capture(me, capture)
 
     # --- UVs (channel 0; feed Y straight — the decoder already undid the V-flip) ---
     if mesh.uvs:
@@ -182,6 +327,12 @@ def build_mesh(mesh: wx.MeshGeometry,
 
     me.update()
     obj = bpy.data.objects.new(mesh.name, me)
+
+    # Record whether geometry was baked into model space, so the exporter's coupling check
+    # can reproduce the same assembly and still recognise an UNMODIFIED mesh (vs a user edit).
+    if worlds is not None:
+        obj[ASSEMBLED_KEY] = 1
+        obj[BONE_INDEX_KEY] = int(bone_index)
 
     # --- bone influences -> vertex groups (named to match armature bones) ---
     if any(mesh.influences):
@@ -283,7 +434,8 @@ def _pivot_world_matrices(hier: wx.Hierarchy) -> list[Matrix]:
 
 
 def build_armature(hier: wx.Hierarchy,
-                   collection: Optional[bpy.types.Collection] = None
+                   collection: Optional[bpy.types.Collection] = None,
+                   capture=None
                    ) -> tuple[bpy.types.Object, dict[int, str], list[Matrix]]:
     """Build an armature from the hierarchy. Returns (object, {pivot_index: bone_name},
     pivot_world_matrices).
@@ -297,20 +449,11 @@ def build_armature(hier: wx.Hierarchy,
     arm = bpy.data.armatures.new(hier.name)
     obj = bpy.data.objects.new(hier.name, arm)
     (collection or bpy.context.scene.collection).objects.link(obj)
+    stash_capture(arm, capture)  # W3DHierarchy capture on the armature datablock
 
     worlds = _pivot_world_matrices(hier)
 
-    bone_names: dict[int, str] = {}
-    used: set[str] = set()
-    for i, p in enumerate(hier.pivots):
-        base = p.name or f"pivot_{i}"
-        name = base
-        n = 1
-        while name in used:
-            name = f"{base}.{n:03d}"
-            n += 1
-        used.add(name)
-        bone_names[i] = name
+    bone_names = bone_name_map(hier)
 
     prev_active = bpy.context.view_layer.objects.active
     bpy.context.view_layer.objects.active = obj
@@ -334,6 +477,11 @@ def build_armature(hier: wx.Hierarchy,
     finally:
         bpy.ops.object.mode_set(mode="OBJECT")
         bpy.context.view_layer.objects.active = prev_active
+
+    # Fingerprint the rest skeleton now (bones are populated once edit mode exits), so the
+    # exporter can tell an unmodified reload (byte-exact) from an edited armature (stated).
+    if capture is not None:
+        stash_fingerprint(arm, "W3DHierarchy")
 
     return obj, bone_names, worlds
 
@@ -361,7 +509,8 @@ def build_collision_box(sub: wx.SubObject,
                         box: Optional[wx.CollisionBox] = None,
                         arm_obj: Optional[bpy.types.Object] = None,
                         worlds: Optional[list[Matrix]] = None,
-                        collection: Optional[bpy.types.Collection] = None
+                        collection: Optional[bpy.types.Collection] = None,
+                        capture=None
                         ) -> bpy.types.Object:
     """Collision boxes are not render geometry — represent as a wire CUBE empty, kept
     clearly separate from imported meshes.
@@ -377,6 +526,7 @@ def build_collision_box(sub: wx.SubObject,
     empty.empty_display_type = "CUBE"
     empty.empty_display_size = 1.0
     (collection or bpy.context.scene.collection).objects.link(empty)
+    stash_capture(empty, capture)  # W3DCollisionBox capture on the empty object
     if arm_obj is not None:
         empty.parent = arm_obj
     if box is not None:
@@ -386,4 +536,8 @@ def build_collision_box(sub: wx.SubObject,
         # centre is in the bone's local space; place, then scale to the half-extents.
         empty.matrix_world = world @ Matrix.Translation(Vector(box.center))
         empty.scale = Vector(box.extent)
+    # Fingerprint the placed empty, so the exporter can tell an unmodified reload (byte-exact)
+    # from a moved/resized box (stated). Only when a capture (and thus real extents) is present.
+    if capture is not None:
+        stash_fingerprint(empty, "W3DCollisionBox")
     return empty

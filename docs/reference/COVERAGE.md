@@ -345,6 +345,33 @@ planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`. (`
 section above and findings 0020/0022/0024. The `Texture`/`OnDemandTexture` record layout was characterized in
 finding 0023 and is now **modeled byte-exact** (0024, shipped-DDS-payload pass-through) — no longer "not modeled".)
 
+## Blender round-trip tier — the UNMODIFIED export is BYTE-EXACT (finding [0028](../findings/0028-blender-exporter-byte-exact-roundtrip-gate.md))
+
+The Blender **exporter** closes the round-trip tier, and — unlike the viewer below — the *unmodified*
+round-trip is **byte-exact-verified against shipped bytes**. The importer stashes the verbatim decoded
+authoring attributes on the Blender datablock (saved into the `.blend`); the exporter re-emits them
+through the **real** `W3DMeshProcessor` packer. `tools/blender-roundtrip-gate.sh` is the acceptance
+test — the 0025 re-pack gate **with Blender in the loop**: `decode ∘ Blender(save+reload) ∘ export ∘
+packer == shipped`, run as two separate Blender processes (import→save `.blend`; reload→export) so the
+export never sees the decoded XML (the anti-bypass). It reuses `mesh-repack-gate.py` select/compare and
+`compare-stream.py` **unchanged**.
+
+- **Byte-exact-verified (seed 42, `static_common`):** W3DMesh (incl. its `<FXShader>` block, all 20
+  vertex-declaration layouts forced in) + W3DContainer / W3DHierarchy / W3DCollisionBox; full **NOD
+  Redeemer 49/49** (container + 99-bone hierarchy + 34 meshes + 13 collision boxes) end to end.
+- **Coupling (honest, not a blind stash dump):** the exporter emits the verbatim stash only when the
+  datablock still matches what the importer built. **Meshes** use a bit-exact geometry coupling
+  (vertex count / positions / triangles / UVs / colours / bone id+weight — assembly-aware for
+  full-model imports). **Graph types** (W3DHierarchy / W3DContainer / W3DCollisionBox) use an
+  import-time **fingerprint** of their canonical editable state (bones / box transform / membership
+  + bindings), recomputed at export (milestone 2.1). A genuine **edit** drops to the **stated tier**
+  — geometry/graph rebuilt from the live datablock (mesh: derived `AABTree`/`Tangents`/`Binormals`
+  dropped; skeleton: lossy, the armature is a reduced visualisation) — *reported*, never byte-exact.
+- **Bounds (from 0025):** the exporter does not emit the unverified packer paths (half-float / Xenon /
+  >2 blend weights); only `static_common` is sampled. Edit detection is exact for an *unmodified*
+  reload (fingerprint bit-exact by construction); the edited-graph *reconstruction* is stated-tier
+  and bounded (skeleton rotation lossy; deep structural container edits not reconstructed).
+
 ## Blender viewer (stated tier — NOT byte-exact)
 
 The `blender/` model importer is a **viewer** tier, separate from the byte-exact data toolchain above

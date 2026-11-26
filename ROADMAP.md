@@ -49,18 +49,20 @@ strength: finish what's decidable, then validate the keystone, then the frontier
      `Texture` assets → base64-decode their shipped-DDS `<Payload>` (finding 0024) → UV-mapped Blender materials,
      replacing the grey placeholder. Stated-tier display, with the decidable sub-anchors (names parse; each payload is
      a valid DDS). Unblocks the visual half of texture editing. → finding 0027.
-   - **6b. Exporter + the Blender byte-exact roundtrip gate.** The **acceptance test, not a footnote**: Blender
-     **import → export → recompile → byte-compare to shipped** must be **byte-exact for unmodified models (geometry
-     *and* textures)**, reusing the existing 0025 `mesh-repack-gate` / `compare-stream.py` oracle *with Blender now in
-     the loop*. The CLI gate (0025) already proves `decode ∘ packer == shipped` 300/300; this gate proves the added
-     delta — `decode ∘ Blender-scene ∘ export ∘ packer == shipped` — i.e. that Blender preserves every authoring
-     attribute losslessly (vertex order/identity, normals/tangents/binormals, bone-influence channel order incl. the
-     channel-0 reference bone + the weight-0 unreferenced-bone channel, vertex colours, the full `<FXShader>` block,
-     hierarchy, container). Realistic design: carry the raw decoded attributes on the datablocks and round-trip an
-     *untouched* mesh straight back out (shipped textures already pass through byte-exact, 0024). The gate **bounds
-     what the exporter may emit**: the 0025-unverified packer paths (half-float, Xenon/big-endian, >2 blend weights)
-     stay off-limits until a corpus exercises them. **Edited** geometry/textures remain the §4 **stated tier**
-     ("loads + renders"), never byte-exact — the gate is for *unmodified* round-trips. → a dated finding when GREEN.
+   - ✅ **6b. Exporter + the Blender byte-exact roundtrip gate — DONE** (2026-11-26, finding
+     [0028](docs/findings/0028-blender-exporter-byte-exact-roundtrip-gate.md)). `tools/blender-roundtrip-gate.sh`
+     proves the added delta — `decode ∘ Blender(save+reload) ∘ export ∘ packer == shipped` — **GREEN byte-exact**
+     for W3DMesh (incl. the `<FXShader>` block, all 20 vertex-declaration layouts) + W3DContainer / W3DHierarchy /
+     W3DCollisionBox on a seed-42 `static_common` sample, and the full **NOD Redeemer 49/49** end to end. It reuses
+     the 0025 `mesh-repack-gate` select/compare + `compare-stream.py` **unchanged**, with Blender in the loop. The
+     importer **stashes the verbatim decoded authoring attributes** on the datablock (a generic element-tree capture
+     that survives a `.blend` save/reload); the exporter re-emits them through the **real** `W3DMeshProcessor` packer.
+     **Anti-bypass:** import→save and reload→export run as two separate Blender processes sharing only the `.blend`,
+     so the export never sees the decoded XML → a green proves Blender's datablocks carried it. A **live-mesh coupling
+     check** (assembly-aware) emits the verbatim stash only when the editable mesh still bit-matches it (byte-exact),
+     else rebuilds from live geometry (**stated tier**, edits reported, never byte-exact). The gate bounds the
+     exporter to the 0025-verified packer paths (no half-float / Xenon / >2 weights). No compiler/comparator/schema/
+     BYO file touched; regressions clean (0025 gate, Armor 207/207, Weapon 456/456, schema-selftest, 0026/0027 tests).
 7. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
    path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
    modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.
@@ -395,18 +397,17 @@ anyone can *check*, not merely trust.
   decode; faithful-not-identical re-encode) — later pillars, each its own dedicated run.
 - 📋 **Art / asset compilers** for new-content mods — the big build. Unlocks making *new* assets, not just editing
   existing ones; a separate effort from the data toolchain above.
-- 🔧 **Blender integration** (viewer → importer → exporter) — **CRITICAL PATH (go-forward item 6).** A Blender
+- ✅ **Blender integration** (viewer → importer → exporter) — **the round-trip tier is DONE.** A Blender
   add-on that is a **thin front-end to the OpenWrath CLI** — scene ⇄ W3X authoring XML — so format knowledge never
-  forks into a plugin (§3 at ecosystem scale). Needs the **authoring/semantic tier**, not just round-trip
-  pass-through: a semantic vertex decode (the base64 packed buffer is not editable geometry) plus
-  `W3DHierarchy`→armature / `W3DContainer`→grouping. The CLI **re-pack equality test** —
-  `semantic-decode ∘ W3DMeshProcessor == shipped bytes` — is **done + green** (0025); the viewer shipped (0026).
-  **The exporter's acceptance gate is the Blender byte-exact roundtrip** — `decode ∘ Blender-scene ∘ export ∘ packer
-  == shipped` for **unmodified models (geometry + textures)**, reusing the 0025 oracle with Blender in the loop. It
-  proves Blender preserves every authoring attribute losslessly (the project's reliability keystone at the ecosystem
-  edge); it is an acceptance test, **not** a mere regression guard. Authored/edited geometry is a **stated tier**
-  ("loads + renders"), never byte-exact (§4); the gate bounds the exporter to the 0025-verified packer paths. Design:
-  **[docs/design/blender-integration.md](docs/design/blender-integration.md)**.
+  forks into a plugin (§3 at ecosystem scale). The CLI **re-pack equality test** (0025), the **viewer** (0026), the
+  **textured viewer** (0027), and now the **exporter + the Blender byte-exact roundtrip gate** (0028) have all shipped.
+  The gate `tools/blender-roundtrip-gate.sh` proves `decode ∘ Blender(save+reload) ∘ export ∘ packer == shipped`
+  **byte-exact** for unmodified W3DMesh (incl. `<FXShader>`) + the graph types and the full NOD Redeemer (49/49),
+  reusing the 0025 oracle with Blender in the loop — the project's reliability keystone reaching the ecosystem edge.
+  Authored/**edited** geometry is a **stated tier** ("loads + renders"), never byte-exact (§4); the gate bounds the
+  exporter to the 0025-verified packer paths. Design: **[docs/design/blender-integration.md](docs/design/blender-integration.md)**.
+  **Still open on this thread:** semantic `W3DAnimation` decode (keyframes, for live deform / the 0026 soft-blend
+  residual), `FXShaderMaterial` normal/spec slots, and new-content authoring (the §4 frontier).
   - 📋 **(perf, deferred — not now) Speed up `openwrath blender view` / `model` decode.** `_decode_model` spawns a
     **separate `bab-decompile` (dotnet) process per asset** — container + hierarchy + every mesh + every collision
     box + every texture — so a full model is dozens of cold .NET starts (the NOD Redeemer: ~34 meshes + collision

@@ -10,12 +10,13 @@ no textures, no export. See ``blender/README.md``.
 """
 
 bl_info = {
-    "name": "OpenWrath Model Importer (Kane's Wrath)",
+    "name": "OpenWrath Model Importer/Exporter (Kane's Wrath)",
     "author": "OpenWrath",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 1, 0),
-    "location": "File > Import > OpenWrath Model (.xml)",
-    "description": "Import a decompiled Kane's Wrath W3D model (viewer / read-only).",
+    "location": "File > Import / Export > OpenWrath (.xml)",
+    "description": "Import and export Kane's Wrath W3D models. Unmodified round-trips are "
+                   "byte-exact vs shipped (finding 0028); edited geometry is stated-tier.",
     "category": "Import-Export",
 }
 
@@ -39,6 +40,13 @@ def _sb():
     from . import scene_builder
     importlib.reload(scene_builder)
     return scene_builder
+
+
+def _sr():
+    """Lazy-import the bpy-dependent scene reader / exporter (and reload under Blender)."""
+    from . import scene_reader
+    importlib.reload(scene_reader)
+    return scene_reader
 
 
 # --------------------------------------------------------------------------- #
@@ -187,16 +195,24 @@ def import_file(filepath, *, resolver=None, import_collision=False, report=print
 
     if atype == "W3DMesh":
         mesh = w3x_xml.parse_mesh(filepath)
+        cap = w3x_xml.capture_asset(filepath)
         mat, status = _base_color_material_for(sb, mesh, resolver, resolver.base_dir, report)
-        sb.build_mesh(mesh, material=mat)
+        sb.build_mesh(mesh, material=mat, capture=cap)
         tex_note = "textured" if status == "textured" else f"untextured ({status})"
         return (f"Imported W3DMesh '{mesh.name}' ({mesh.vertex_count} verts, "
                 f"{len(mesh.triangles)} tris) — {tex_note}.")
 
     if atype == "W3DHierarchy":
         hier = w3x_xml.parse_hierarchy(filepath)
-        sb.build_armature(hier)
+        sb.build_armature(hier, capture=w3x_xml.capture_asset(filepath))
         return f"Imported W3DHierarchy '{hier.name}' ({len(hier.pivots)} bones)."
+
+    if atype == "W3DCollisionBox":
+        box = w3x_xml.parse_collision_box(filepath)
+        sub = w3x_xml.SubObject(bone_index=0, sub_object_id=box.name,
+                                render_kind="CollisionBox", render_name=box.name)
+        sb.build_collision_box(sub, box=box, capture=w3x_xml.capture_asset(filepath))
+        return f"Imported W3DCollisionBox '{box.name}'."
 
     if atype == "W3DContainer":
         return _import_container(filepath, resolver, import_collision, report)
@@ -211,6 +227,8 @@ def _import_container(filepath, resolver, import_collision, report):
     cont = w3x_xml.parse_container(filepath)
     coll = bpy.data.collections.new(cont.name)
     bpy.context.scene.collection.children.link(coll)
+    # Stash the container capture on the collection datablock (survives .blend reload).
+    sb.stash_capture(coll, w3x_xml.capture_asset(filepath))
 
     arm_obj = None
     bone_names = {}
@@ -219,7 +237,8 @@ def _import_container(filepath, resolver, import_collision, report):
         try:
             hpath = resolver.resolve(cont.hierarchy, type_hint="W3DHierarchy")
             hier = w3x_xml.parse_hierarchy(hpath)
-            arm_obj, bone_names, worlds = sb.build_armature(hier, collection=coll)
+            arm_obj, bone_names, worlds = sb.build_armature(
+                hier, collection=coll, capture=w3x_xml.capture_asset(hpath))
         except Exception as e:  # hierarchy optional for a bare view
             report(f"WARNING: could not import hierarchy '{cont.hierarchy}': {e}")
 
@@ -235,16 +254,18 @@ def _import_container(filepath, resolver, import_collision, report):
                     box_coll = bpy.data.collections.new(f"{cont.name}_Collision")
                     coll.children.link(box_coll)
                 box = None
+                box_cap = None
                 if sub.render_name:
                     try:  # the box asset is a modeled type — resolve + decode like any ref
                         bpath = resolver.resolve(sub.render_name, type_hint="W3DCollisionBox")
                         box = w3x_xml.parse_collision_box(bpath)
+                        box_cap = w3x_xml.capture_asset(bpath)
                         n_box_sized += 1
                     except Exception as e:
                         report(f"note: collision box '{sub.render_name}' extents unavailable "
                                f"(drawing unit cube): {e}")
                 sb.build_collision_box(sub, box=box, arm_obj=arm_obj,
-                                       worlds=worlds, collection=box_coll)
+                                       worlds=worlds, collection=box_coll, capture=box_cap)
                 n_box += 1
             continue
         if not sub.render_name:
@@ -252,10 +273,12 @@ def _import_container(filepath, resolver, import_collision, report):
         try:
             mpath = resolver.resolve(sub.render_name, type_hint="W3DMesh")
             mesh = w3x_xml.parse_mesh(mpath)
+            mcap = w3x_xml.capture_asset(mpath)
             mat, status = _base_color_material_for(sb, mesh, resolver, resolver.base_dir, report)
             tex_status[status] = tex_status.get(status, 0) + 1
             mobj = sb.build_mesh(mesh, collection=coll, bone_names=bone_names,
-                                 worlds=worlds, bone_index=sub.bone_index, material=mat)
+                                 worlds=worlds, bone_index=sub.bone_index, material=mat,
+                                 capture=mcap)
             if arm_obj is not None:
                 sb.bind_mesh_to_armature(mobj, arm_obj, sub, bone_names, worlds)
             n_mesh += 1
@@ -271,6 +294,11 @@ def _import_container(filepath, resolver, import_collision, report):
            + (f" ({buckets})" if buckets else "")
            + ". Material/scene display is stated-tier (no byte oracle); only the DDS payload "
              "validity is byte-decidable.")
+    # Fingerprint the assembled container (membership + sub-object bindings) now that every
+    # mesh/box is built, so the exporter can tell an unmodified reload (byte-exact) from an
+    # edited (regrouped/rebound) container (stated).
+    sb.stash_fingerprint(coll, "W3DContainer")
+
     box_note = f"{n_box} collision box(es)"
     if n_box:
         box_note += f" ({n_box_sized} with real extents)"
@@ -280,13 +308,81 @@ def _import_container(filepath, resolver, import_collision, report):
 
 
 # --------------------------------------------------------------------------- #
+# Export (scene -> W3X authoring XML). The mirror of import_file; headless-drivable
+# by the round-trip gate via `blender --background --python`.
+# --------------------------------------------------------------------------- #
+
+def _select_target(targets, asset_id, asset_type, obj):
+    if obj is not None:
+        for t in targets:
+            if t["obj"] is obj or t["idblock"] is getattr(obj, "data", None) or t["idblock"] is obj:
+                return t
+        raise ValueError(f"object '{getattr(obj, 'name', obj)}' carries no OpenWrath stash.")
+    chosen = targets
+    if asset_id is not None:
+        chosen = [t for t in chosen if t["asset_id"] == asset_id]
+    if asset_type is not None:
+        chosen = [t for t in chosen if t["asset_type"] == asset_type]
+    if not chosen:
+        raise ValueError(f"no stashed asset matched asset_id={asset_id!r}, asset_type={asset_type!r}.")
+    if len(chosen) > 1:
+        # A full model import leaves many stashed assets; prefer the single container.
+        conts = [t for t in chosen if t["kind"] == "container"]
+        if len(conts) == 1:
+            return conts[0]
+        ids = ", ".join(sorted(t["asset_id"] for t in chosen))
+        raise ValueError(f"{len(chosen)} stashed assets in the scene; disambiguate with "
+                         f"asset_id=/asset_type= (found: {ids}).")
+    return chosen[0]
+
+
+def export_file(filepath, *, asset_id=None, asset_type=None, obj=None, report=print):
+    """Export ONE stashed asset from the current scene to authoring XML at ``filepath``.
+
+    Mirrors :func:`import_file`. Selects the target by ``obj`` (the active object), else by
+    ``asset_id`` / ``asset_type``, else the unique stashed asset (or the single container of
+    a full-model import). Returns a short summary string. The tier (``byte-exact`` for an
+    unmodified mesh, ``stated`` for an edited one) is decided in :mod:`scene_reader` and
+    reported — never silently claimed byte-exact."""
+    sr = _sr()
+    targets = sr.find_export_targets()
+    if not targets:
+        raise ValueError("no OpenWrath-imported asset found in the scene to export "
+                         "(nothing carries the import stash — import a model first).")
+    target = _select_target(targets, asset_id, asset_type, obj)
+    cap, tier, note = sr.export_target(target)
+    xml = w3x_xml.serialize_capture(cap)
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write(xml)
+    report(f"Exported {cap.asset_type} '{cap.asset_id}' [{tier}] {note}")
+    return f"Exported {cap.asset_type} '{cap.asset_id}' -> {os.path.basename(filepath)} [{tier}]."
+
+
+def export_all(dirpath, *, report=print):
+    """Export EVERY stashed asset in the scene to ``dirpath`` as ``<Type>.<id>.xml`` (the
+    decompile-stream naming). Used for a whole-model round-trip (import container → reload →
+    export all → recompile → compare). Returns ``(count, [(type,id,tier), ...])``."""
+    sr = _sr()
+    targets = sr.find_export_targets()
+    results = []
+    for t in targets:
+        cap, tier, note = sr.export_target(t)
+        out = os.path.join(dirpath, f"{cap.asset_type}.{cap.asset_id}.xml")
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(w3x_xml.serialize_capture(cap))
+        report(f"  exported {cap.asset_type} '{cap.asset_id}' [{tier}]")
+        results.append((cap.asset_type, cap.asset_id, tier))
+    return len(results), results
+
+
+# --------------------------------------------------------------------------- #
 # Blender operator + menu
 # --------------------------------------------------------------------------- #
 
 def _register_operator():
     import bpy
     from bpy.props import BoolProperty, StringProperty
-    from bpy_extras.io_utils import ImportHelper
+    from bpy_extras.io_utils import ImportHelper, ExportHelper
 
     class OPENWRATH_OT_import_model(bpy.types.Operator, ImportHelper):
         """Import a decompiled Kane's Wrath model (W3DContainer / Hierarchy / Mesh)"""
@@ -346,32 +442,75 @@ def _register_operator():
             self.report({"INFO"}, summary)
             return {"FINISHED"}
 
+    class OPENWRATH_OT_export_model(bpy.types.Operator, ExportHelper):
+        """Export the OpenWrath asset back to W3X authoring XML.
+
+        An *unmodified* imported mesh round-trips BYTE-EXACT (the stash the importer wrote
+        onto the datablock recompiles to the shipped bytes); an *edited* mesh is exported as
+        a stated-tier ("loads + renders") reconstruction, never claimed byte-exact. The
+        exporter reports which tier it used."""
+        bl_idname = "openwrath.export_model"
+        bl_label = "Export OpenWrath Asset"
+        bl_options = {"REGISTER"}
+
+        filename_ext = ".xml"
+        filter_glob: StringProperty(default="*.xml", options={"HIDDEN"})
+
+        use_active: BoolProperty(
+            name="Export active object only",
+            description="Export the asset of the active object (default). Off: export the "
+                        "unique stashed asset, or the single container of a full-model import.",
+            default=True,
+        )
+
+        def execute(self, context):
+            obj = context.active_object if self.use_active else None
+            try:
+                summary = export_file(
+                    self.filepath, obj=obj,
+                    report=lambda m: self.report({"INFO"}, m),
+                )
+            except Exception as e:
+                self.report({"ERROR"}, f"OpenWrath export failed: {e}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, summary)
+            return {"FINISHED"}
+
     def menu_func_import(self, context):
         self.layout.operator(OPENWRATH_OT_import_model.bl_idname,
                              text="OpenWrath Model (.xml)")
 
-    return OPENWRATH_OT_import_model, menu_func_import
+    def menu_func_export(self, context):
+        self.layout.operator(OPENWRATH_OT_export_model.bl_idname,
+                             text="OpenWrath Asset (.xml)")
+
+    return (OPENWRATH_OT_import_model, menu_func_import,
+            OPENWRATH_OT_export_model, menu_func_export)
 
 
 _classes = []
-_menu_func = None
+_menu_func_import = None
+_menu_func_export = None
 
 
 def register():
     import bpy
-    global _classes, _menu_func
-    op, _menu_func = _register_operator()
-    _classes = [op]
+    global _classes, _menu_func_import, _menu_func_export
+    imp_op, _menu_func_import, exp_op, _menu_func_export = _register_operator()
+    _classes = [imp_op, exp_op]
     for c in _classes:
         bpy.utils.register_class(c)
-    bpy.types.TOPBAR_MT_file_import.append(_menu_func)
+    bpy.types.TOPBAR_MT_file_import.append(_menu_func_import)
+    bpy.types.TOPBAR_MT_file_export.append(_menu_func_export)
 
 
 def unregister():
     import bpy
-    global _classes, _menu_func
-    if _menu_func is not None:
-        bpy.types.TOPBAR_MT_file_import.remove(_menu_func)
+    global _classes, _menu_func_import, _menu_func_export
+    if _menu_func_import is not None:
+        bpy.types.TOPBAR_MT_file_import.remove(_menu_func_import)
+    if _menu_func_export is not None:
+        bpy.types.TOPBAR_MT_file_export.remove(_menu_func_export)
     for c in reversed(_classes):
         bpy.utils.unregister_class(c)
     _classes = []

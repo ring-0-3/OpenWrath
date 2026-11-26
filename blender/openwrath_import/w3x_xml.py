@@ -251,8 +251,13 @@ def asset_type(path: str) -> str:
 
 def parse_mesh(path: str) -> MeshGeometry:
     el = _asset_root(path)
+    return _parse_mesh_el(el, where=path)
+
+
+def _parse_mesh_el(el: ET.Element, where: str = "<element>") -> MeshGeometry:
     if _local(el.tag) != "W3DMesh":
-        raise ValueError(f"{path}: not a W3DMesh (<{_local(el.tag)}>)")
+        raise ValueError(f"{where}: not a W3DMesh (<{_local(el.tag)}>)")
+    path = where
 
     name = el.get("id", "mesh")
 
@@ -385,9 +390,20 @@ _FIXUP_KEYS = [f"M{r}{c}" for r in range(4) for c in range(4)]  # M00,M01,..,M33
 
 
 def parse_hierarchy(path: str) -> Hierarchy:
-    el = _asset_root(path)
+    return _parse_hierarchy_el(_asset_root(path), where=path)
+
+
+def hierarchy_from_capture(cap: AssetCapture) -> Hierarchy:
+    """Derive a :class:`Hierarchy` from a captured ``W3DHierarchy`` node (reuses the one
+    reader) — used by the exporter to rebuild bind-pose world matrices for an assembled mesh."""
+    if cap.asset_type != "W3DHierarchy":
+        raise ValueError(f"capture is {cap.asset_type}, not W3DHierarchy")
+    return _parse_hierarchy_el(_et_from_node(cap.node), where=f"capture:{cap.asset_id}")
+
+
+def _parse_hierarchy_el(el: ET.Element, where: str = "<element>") -> Hierarchy:
     if _local(el.tag) != "W3DHierarchy":
-        raise ValueError(f"{path}: not a W3DHierarchy (<{_local(el.tag)}>)")
+        raise ValueError(f"{where}: not a W3DHierarchy (<{_local(el.tag)}>)")
 
     pivots: list[Pivot] = []
     for p in _children(el, "Pivot"):
@@ -456,3 +472,294 @@ def parse_collision_box(path: str) -> CollisionBox:
         center=_vec3(ce) if ce is not None else (0.0, 0.0, 0.0),
         extent=_vec3(ex) if ex is not None else (1.0, 1.0, 1.0),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Generic, verbatim asset capture — the EXPORTER's lossless stash (milestone 2).
+#
+# This is deliberately a *dumb XML→tree copy*: it knows nothing about what a
+# <Vertices> or <FXShader> MEANS. All W3D format/semantic knowledge still lives in
+# the parse_* readers above (and in the OpenWrath CLI) — the capture carries NO second
+# copy of it (CLAUDE.md invariant 3 / blender-integration.md §3). Its only job is to
+# preserve the decoded authoring attributes exactly so an *unmodified* imported asset
+# re-emits byte-for-byte what bab-decompile produced — which 0025 proved recompiles to
+# the shipped bytes. The attribute/text VALUES are kept verbatim (as strings), so no
+# float re-formatting can perturb the recompiled bytes.
+#
+# The capture is what the importer stashes on the Blender datablock (as JSON that
+# survives a .blend save/reload); the exporter re-serialises it. For an EDITED mesh the
+# exporter instead calls :func:`rewrite_mesh_geometry` to rebuild the geometry nodes from
+# Blender's live mesh — the stated tier (never claimed byte-exact).
+# --------------------------------------------------------------------------- #
+
+# Child-element names of a <W3DMesh> that hold per-vertex / per-face GEOMETRY an exporter
+# can reconstruct from a Blender mesh. The EDITED path rewrites exactly these from live
+# geometry; everything else (BoundingBox/Sphere, FXShader, AABTree, header attrs) is
+# carried through from the capture. (AABTree/Tangents/Binormals are DERIVED structures —
+# an edited mesh drops them rather than inventing them; see rewrite_mesh_geometry.)
+_MESH_GEOMETRY_TAGS = (
+    "Vertices", "Normals", "Tangents", "Binormals", "TexCoords",
+    "VertexColors", "BoneInfluences", "Triangles",
+)
+
+
+@dataclass
+class Node:
+    """A minimal, order-preserving XML node (local tag names, namespace stripped).
+
+    ``text`` is kept only for leaf elements (those with no child elements) — i.e. a
+    value like ``<V>2</V>`` or ``<Dist>0.021343</Dist>``; the pretty-print whitespace
+    between child elements is intentionally dropped (XML parsers ignore it, so it cannot
+    affect the recompiled bytes)."""
+
+    tag: str
+    attrib: dict[str, str] = field(default_factory=dict)
+    text: Optional[str] = None
+    children: list["Node"] = field(default_factory=list)
+
+
+@dataclass
+class AssetCapture:
+    """A verbatim capture of one decoded asset element (its ``<W3DMesh>`` / ``<W3DHierarchy>``
+    / ``<W3DContainer>`` / ``<W3DCollisionBox>`` …), the exporter's lossless stash."""
+
+    asset_type: str
+    asset_id: str
+    node: Node
+
+
+def _node_from_et(el: ET.Element) -> Node:
+    kids = list(el)
+    text = None
+    if not kids:  # leaf: keep its value verbatim
+        text = el.text
+    return Node(
+        tag=_local(el.tag),
+        attrib={_local(k): v for k, v in el.attrib.items()},
+        text=text,
+        children=[_node_from_et(c) for c in kids],
+    )
+
+
+def _et_from_node(node: Node) -> ET.Element:
+    el = ET.Element(f"{{{ASSET_NS}}}{node.tag}")
+    for k, v in node.attrib.items():
+        el.set(k, v)
+    if node.children:
+        for c in node.children:
+            el.append(_et_from_node(c))
+    elif node.text is not None:
+        el.text = node.text
+    return el
+
+
+def capture_asset(path: str) -> AssetCapture:
+    """Capture a decoded asset file verbatim (the exporter's stash). The returned tree
+    re-serialises (via :func:`serialize_capture`) to XML that recompiles byte-identically
+    to the input, because every value is preserved as its exact decoded string."""
+    el = _asset_root(path)
+    node = _node_from_et(el)
+    return AssetCapture(asset_type=node.tag, asset_id=node.attrib.get("id", ""), node=node)
+
+
+def capture_to_json(cap: AssetCapture) -> str:
+    """Serialise a capture to a compact JSON string, for stashing on a Blender datablock.
+    Compact keys keep large meshes small: ``t``=tag, ``a``=attrib, ``x``=text, ``c``=children."""
+    import json
+
+    def enc(n: Node):
+        d = {"t": n.tag}
+        if n.attrib:
+            d["a"] = n.attrib
+        if n.text is not None:
+            d["x"] = n.text
+        if n.children:
+            d["c"] = [enc(c) for c in n.children]
+        return d
+
+    return json.dumps({"ty": cap.asset_type, "id": cap.asset_id, "n": enc(cap.node)},
+                      separators=(",", ":"))
+
+
+def capture_from_json(s: str) -> AssetCapture:
+    import json
+
+    def dec(d) -> Node:
+        return Node(tag=d["t"], attrib=d.get("a", {}), text=d.get("x"),
+                    children=[dec(c) for c in d.get("c", [])])
+
+    o = json.loads(s)
+    return AssetCapture(asset_type=o["ty"], asset_id=o["id"], node=dec(o["n"]))
+
+
+def serialize_capture(cap: AssetCapture) -> str:
+    """Render a capture back to a full authoring-XML document (``<AssetDeclaration>`` +
+    the asset element), ready for the compiler. Whitespace/indentation is cosmetic and
+    does not affect the recompiled bytes; the element/attribute VALUES are verbatim."""
+    ET.register_namespace("", ASSET_NS)
+    root = ET.Element(f"{{{ASSET_NS}}}AssetDeclaration")
+    root.append(_et_from_node(cap.node))
+    try:
+        ET.indent(root, space="  ")  # py3.9+: pretty-print, purely cosmetic
+    except AttributeError:
+        pass
+    body = ET.tostring(root, encoding="unicode")
+    return '<?xml version="1.0" encoding="utf-8"?>\n' + body + "\n"
+
+
+def mesh_geometry_from_capture(cap: AssetCapture) -> MeshGeometry:
+    """Derive the float-based :class:`MeshGeometry` from a captured ``W3DMesh`` node, reusing
+    the one semantic reader (:func:`_parse_mesh_el`) — no second parse. Used by the exporter's
+    live-mesh coupling check (does Blender's mesh still equal the stashed authoring geometry?)."""
+    if cap.asset_type != "W3DMesh":
+        raise ValueError(f"capture is {cap.asset_type}, not W3DMesh")
+    return _parse_mesh_el(_et_from_node(cap.node), where=f"capture:{cap.asset_id}")
+
+
+def _mesh_geometry_nodes(geo: "MeshGeometry") -> list[Node]:
+    """Build the geometry child-nodes (<Vertices>/<Normals>/<TexCoords>/<VertexColors>/
+    <BoneInfluences>/<Triangles>) from a MeshGeometry — the EDITED-path reconstruction.
+
+    This is the ONE place the exporter encodes mesh-geometry XML shape (mirroring
+    :func:`parse_mesh`'s element names). It is **stated tier** output: values come from
+    Blender floats via :func:`_fnum`, so it is never claimed byte-exact. Tangents /
+    Binormals / AABTree are DERIVED and are deliberately not synthesised here."""
+    out: list[Node] = []
+    for chan in geo.position_channels:
+        out.append(Node("Vertices", children=[_vec3_node("V", v) for v in chan]))
+    for chan in geo.normal_channels:
+        out.append(Node("Normals", children=[_vec3_node("N", v) for v in chan]))
+    for chan in geo.uv_channels:
+        out.append(Node("TexCoords",
+                        children=[Node("T", {"X": _fnum(u), "Y": _fnum(v)}) for (u, v) in chan]))
+    if geo.colors:
+        out.append(Node("VertexColors", children=[
+            Node("C", {"R": _fnum(r), "G": _fnum(g), "B": _fnum(b), "A": _fnum(a)})
+            for (r, g, b, a) in geo.colors]))
+    # One <BoneInfluences> channel per influence slot (channel c = the c-th slot of each vertex).
+    nchan = max((len(geo.influences[v]) for v in range(geo.vertex_count)), default=0)
+    for c in range(nchan):
+        inf_nodes = []
+        for v in range(geo.vertex_count):
+            slot = geo.influences[v]
+            bone, weight = slot[c] if c < len(slot) else (0, 0.0)
+            inf_nodes.append(Node("I", {"Weight": _fnum(weight), "Bone": str(bone)}))
+        out.append(Node("BoneInfluences", children=inf_nodes))
+    tri_nodes = []
+    for (a, b, c) in geo.triangles:
+        tri_nodes.append(Node("T", children=[Node("V", text=str(a)),
+                                             Node("V", text=str(b)),
+                                             Node("V", text=str(c))]))
+    out.append(Node("Triangles", children=tri_nodes))
+    return out
+
+
+def rewrite_mesh_geometry(cap: AssetCapture, geo: "MeshGeometry") -> AssetCapture:
+    """Return a new capture with the mesh geometry REPLACED by ``geo`` (the EDITED path).
+
+    Non-geometry children (BoundingBox/Sphere, FXShader, header attrs) are carried through
+    from the original capture. DERIVED structures the exporter cannot faithfully regenerate
+    from an edited Blender mesh — ``AABTree``, ``Tangents``, ``Binormals`` — are DROPPED
+    (the compiler rebuilds/omits them); this is why an edited mesh is stated-tier, never
+    byte-exact. Order: keep the first geometry child's position, insert the rebuilt geometry
+    there, keep every non-geometry child in place."""
+    geo_nodes = _mesh_geometry_nodes(geo)
+    new_children: list[Node] = []
+    inserted = False
+    for ch in cap.node.children:
+        if ch.tag in _MESH_GEOMETRY_TAGS or ch.tag == "AABTree":
+            if not inserted:
+                new_children.extend(geo_nodes)
+                inserted = True
+            continue  # drop the original geometry/derived node
+        new_children.append(ch)
+    if not inserted:
+        new_children.extend(geo_nodes)
+    new_node = Node(tag=cap.node.tag, attrib=dict(cap.node.attrib),
+                    text=cap.node.text, children=new_children)
+    return AssetCapture(asset_type=cap.asset_type, asset_id=cap.asset_id, node=new_node)
+
+
+def _node_child(node: Node, tag: str) -> Optional[Node]:
+    for c in node.children:
+        if c.tag == tag:
+            return c
+    return None
+
+
+def rewrite_collision_box(cap: AssetCapture, center: "Vec3", extent: "Vec3") -> AssetCapture:
+    """Return a capture with the box's ``<Center>``/``<Extent>`` set from a live empty (the
+    edited path — stated tier). All other attributes (id, JoypadPickingOnly) are carried through."""
+    new_children = []
+    for c in cap.node.children:
+        if c.tag == "Center":
+            new_children.append(Node("Center", {"X": _fnum(center[0]), "Y": _fnum(center[1]),
+                                                "Z": _fnum(center[2])}))
+        elif c.tag == "Extent":
+            new_children.append(Node("Extent", {"X": _fnum(extent[0]), "Y": _fnum(extent[1]),
+                                                "Z": _fnum(extent[2])}))
+        else:
+            new_children.append(c)
+    node = Node(cap.node.tag, dict(cap.node.attrib), cap.node.text, new_children)
+    return AssetCapture(cap.asset_type, cap.asset_id, node)
+
+
+def rewrite_hierarchy(cap: AssetCapture, pivots: list["Pivot"]) -> AssetCapture:
+    """Return a capture with each ``<Pivot>``'s ``<Translation>``/``<Rotation>`` set from live
+    armature bones (the edited path — stated tier, LOSSY: the viewer armature is a reduced
+    visualisation of the pivots). Name / Parent / FixupMatrix are carried through from the stash;
+    pivots are matched to ``<Pivot>`` nodes by order."""
+    out_children = []
+    idx = 0
+    for c in cap.node.children:
+        if c.tag == "Pivot" and idx < len(pivots):
+            p = pivots[idx]
+            idx += 1
+            new_kids = []
+            for sub in c.children:
+                if sub.tag == "Translation":
+                    new_kids.append(Node("Translation", {"X": _fnum(p.translation[0]),
+                                                         "Y": _fnum(p.translation[1]),
+                                                         "Z": _fnum(p.translation[2])}))
+                elif sub.tag == "Rotation":
+                    rx, ry, rz, rw = p.rotation
+                    new_kids.append(Node("Rotation", {"X": _fnum(rx), "Y": _fnum(ry),
+                                                      "Z": _fnum(rz), "W": _fnum(rw)}))
+                else:
+                    new_kids.append(sub)  # FixupMatrix et al. carried through
+            out_children.append(Node("Pivot", dict(c.attrib), c.text, new_kids))
+        else:
+            out_children.append(c)
+    node = Node(cap.node.tag, dict(cap.node.attrib), cap.node.text, out_children)
+    return AssetCapture(cap.asset_type, cap.asset_id, node)
+
+
+def rewrite_container(cap: AssetCapture, sub_objects: list["SubObject"]) -> AssetCapture:
+    """Return a capture whose ``<SubObject>`` list is rebuilt from a live collection's membership
+    + bindings (the edited path — stated tier). The W3DContainer attributes (id, Hierarchy) and
+    any non-SubObject children are carried through from the stash."""
+    rebuilt = []
+    for so in sub_objects:
+        wrap = "Mesh" if so.render_kind == "Mesh" else "CollisionBox"
+        rebuilt.append(Node("SubObject",
+                            {"BoneIndex": str(so.bone_index), "SubObjectID": so.sub_object_id},
+                            None,
+                            [Node("RenderObject", {}, None, [Node(wrap, {}, so.render_name, [])])]))
+    out_children = [c for c in cap.node.children if c.tag != "SubObject"] + rebuilt
+    node = Node(cap.node.tag, dict(cap.node.attrib), cap.node.text, out_children)
+    return AssetCapture(cap.asset_type, cap.asset_id, node)
+
+
+def _vec3_node(tag: str, v: "Vec3") -> Node:
+    return Node(tag, {"X": _fnum(v[0]), "Y": _fnum(v[1]), "Z": _fnum(v[2])})
+
+
+def _fnum(x: float) -> str:
+    """Render a float for EDITED-path (stated-tier) authoring XML. ``repr`` round-trips a
+    float64 exactly, and the compiler parses it to the nearest float32 — adequate for the
+    "loads + renders" tier (this path is never byte-compared). ``-0.0`` keeps its sign."""
+    f = float(x)
+    if f == 0.0:
+        import math
+        return "-0" if math.copysign(1.0, f) < 0 else "0"
+    return repr(f)

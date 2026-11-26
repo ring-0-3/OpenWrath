@@ -1,29 +1,39 @@
-# OpenWrath Model Importer (Blender) — milestone 1: read-only viewer
+# OpenWrath Model Importer/Exporter (Blender) — the round-trip tier
 
 A Blender add-on that opens a shipped **Kane's Wrath** model (a `W3DContainer` with its
 `W3DHierarchy`, `W3DMesh` and `W3DCollisionBox` assets) in Blender: meshes with correct
 geometry, an armature from the hierarchy, and every sub-object **assembled into the whole
 model** via the skeleton's bind pose (rigid parts placed at their bone; skinned parts
-blend-skinned) — plus collision boxes sized to their real extents.
+blend-skinned) — plus collision boxes sized to their real extents — **and exports it back**.
 
 It is a **thin front-end to the OpenWrath CLI.** It reimplements **no** W3D format logic —
-every byte⇄XML conversion goes through `bab-decompile`; the add-on only translates that XML
-into Blender datablocks. This is deliberate: a second format parser inside a plugin would
-drift from the verified toolchain (see `docs/design/blender-integration.md` and CLAUDE.md
-invariant 3). **Read-only — no exporter in this milestone.**
+every byte⇄XML conversion goes through `bab-decompile`/`BinaryAssetBuilder`; the add-on only
+translates that XML into Blender datablocks and back. This is deliberate: a second format
+parser/packer inside a plugin would drift from the verified toolchain (see
+`docs/design/blender-integration.md` and CLAUDE.md invariant 3).
+
+**The exporter's round-trip is byte-exact-verified** (finding 0028): an *unmodified* imported
+model exports back to bytes **identical to what the game ships**, proven by
+`tools/blender-roundtrip-gate.sh` — the 0025 re-pack gate with Blender in the loop. An
+*edited* mesh exports as a **stated tier** ("loads + renders") reconstruction, never claimed
+byte-exact. The importer stashes the verbatim decoded authoring attributes on each datablock
+(saved into the `.blend`), so an untouched asset round-trips losslessly; the exporter reports
+which tier it used.
 
 ## Architecture
 
 ```
-shipped .bin/stream ──bab-decompile --semantic-mesh──▶ W3X XML ──add-on──▶ Blender scene
+shipped .bin/stream ──bab-decompile --semantic-mesh──▶ W3X XML ──add-on import──▶ Blender scene
+Blender scene ──add-on export──▶ W3X authoring XML ──BinaryAssetBuilder──▶ packed runtime bytes
 ```
 
 | module | responsibility |
 |---|---|
-| `openwrath_import/w3x_xml.py`     | parse decompiled XML → dataclasses. **The one source of format knowledge.** Pure stdlib (no `bpy`). |
-| `openwrath_import/cli.py`         | shell out to `bab-decompile`. Knows only how to *invoke* it. |
-| `openwrath_import/scene_builder.py` | dataclasses → Blender mesh / armature / bindings, incl. bind-pose assembly (rigid + blend-skin bake). The only `bpy` module. |
-| `openwrath_import/__init__.py`    | the `File > Import` operator + orchestration. |
+| `openwrath_import/w3x_xml.py`     | parse decompiled XML → dataclasses (readers) **and** the symmetric writer (verbatim `AssetCapture` / `serialize_capture`). **The one source of format knowledge.** Pure stdlib (no `bpy`). |
+| `openwrath_import/cli.py`         | shell out to `bab-decompile` / `BinaryAssetBuilder` (the one `build_decode_argv` / `build_compile_argv`). Knows only how to *invoke* them. |
+| `openwrath_import/scene_builder.py` | dataclasses → Blender mesh / armature / bindings, incl. bind-pose assembly + the lossless authoring **stash** on each datablock. A `bpy` module. |
+| `openwrath_import/scene_reader.py`  | the **exporter** — Blender datablocks → `AssetCapture` (the mirror of `scene_builder`): reads the stash, the live-mesh coupling check, unmodified→byte-exact / edited→stated. A `bpy` module. |
+| `openwrath_import/__init__.py`    | the `File > Import` + `File > Export` operators, `import_file` / `export_file` / `export_all` orchestration. |
 
 ## Install
 
@@ -88,13 +98,43 @@ done
 # then File > Import > OpenWrath Model → $D/<CONTAINER>.xml
 ```
 
+## Export workflow
+
+`File > Export > OpenWrath Asset (.xml)` with a model imported by this add-on selected:
+
+- the **active object's** asset is exported (a mesh, the armature's `W3DHierarchy`, a
+  collision box), or — with *Export active object only* off — the unique stashed asset / the
+  single container of a full-model import;
+- an **unmodified** mesh exports **byte-exact** (the verbatim authoring stash, recompiled
+  through the real packer == shipped bytes); an **edited** mesh exports as a **stated-tier**
+  reconstruction from the live geometry. The operator reports which tier it used.
+
+Headless (what the round-trip gate drives): `openwrath_import.export_file(path, …)` and
+`export_all(dir)` mirror `import_file`. The **byte-exact acceptance gate**:
+
+```bash
+tools/blender-roundtrip-gate.sh --from-binary <stream.manifest> [--sample N] [--seed S] [--graph-sample M]
+```
+
+It imports→**saves a `.blend`→reloads it in a fresh Blender process**→exports→recompiles→
+byte-compares to the shipped stream, for W3DMesh (incl. `<FXShader>`) and the graph types. The
+two-process reload is the anti-bypass: the export process never sees the decoded XML, so GREEN
+proves Blender's datablocks (not a sidecar) carried every authoring attribute. It reuses
+`tools/mesh-repack-gate.py` (select/compare) and `tools/compare-stream.py` unchanged.
+
 ## Tests
 
 ```bash
 blender/tests/run_tests.sh
 ```
 
-Two tiers (kept distinct — `docs/design/verification-blind-spots.md` §4):
+Tiers (kept distinct — `docs/design/verification-blind-spots.md` §4):
+
+0. **Exporter capture/writer tests** (`tests/test_export.py`, plain `python3`) — the stash
+   round-trips through JSON losslessly, `serialize_capture` re-captures identically, and
+   `rewrite_mesh_geometry` drops derived structures. **Exporter round-trip gate**
+   (`tests/test_export_roundtrip.py`, under Blender) — import→**save/reload**→export is the
+   byte-exact tier and re-captures identically; a vertex edit drops to the **stated** tier.
 
 1. **Decidable self-consistency gate** (`tests/test_self_consistency.py`, under Blender).
    Parses a mesh XML, builds the Blender mesh, reads the datablock back, and asserts it
@@ -185,8 +225,16 @@ by hand:
   `tests/test_textures.py`); the material/scene *look* is **stated-tier** (no byte oracle).
   `NormalMap`/`SpecMap`/`Texture_1` and full `FXShaderMaterial` semantics are not wired yet;
   *encoding* new DDS is the frontier tier.
-- **No exporter.** Read-only. Export is staging step 3, gated on the re-pack equality gate
-  (`tools/mesh-repack-gate.sh`), a separate milestone.
+- **Exporter: unmodified = byte-exact, edited = stated (finding 0028).** An *unmodified*
+  imported model exports back **byte-exact vs shipped** (the verbatim authoring stash through the
+  real packer; proven by `tools/blender-roundtrip-gate.sh`). An *edited* mesh is reconstructed
+  from Blender's live geometry — **stated tier** (Blender stores normals only to int16, drops
+  derived `AABTree`/tangents/binormals), never byte-exact. **Graph types** (hierarchy / collision
+  box / container) are edit-detected via an import-time **fingerprint** (milestone 2.1): an
+  unmodified reload stays byte-exact, a real edit (moved bone / resized box / regrouped container)
+  drops to **stated** (rebuilt from the live datablock; the skeleton rebuild is lossy — the viewer
+  armature is a reduced visualisation). The exporter will not emit the 0025-unverified packer paths
+  (half-float / Xenon / >2 blend weights).
 - **Coordinate convention is passed through verbatim** (no axis remap applied). If models
   import rotated relative to Blender's Z-up, a documented global transform is the fix — left
   out of v1 so the self-consistency gate compares raw decoded values.

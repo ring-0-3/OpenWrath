@@ -13,17 +13,29 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLENDER_DIR="$(dirname "$HERE")"
 
-echo "== [1/3] parser tests (system python) =="
+echo "== [1/5] parser tests (system python) =="
 python3 "$HERE/test_parser.py"
 
 echo
-echo "== [2/3] texture decidable-anchor tests (system python) =="
+echo "== [2/5] texture decidable-anchor tests (system python) =="
 python3 "$HERE/test_textures.py"
 
 echo
-echo "== [3/3] self-consistency gate (Blender) =="
+echo "== [3/5] exporter capture/writer tests (system python) =="
+python3 "$HERE/test_export.py"
+
+echo
+echo "== [4/5] self-consistency gate (Blender) =="
 if command -v blender >/dev/null 2>&1; then
   blender --background --python "$HERE/test_self_consistency.py"
 else
   echo "SKIP: 'blender' not on PATH — install Blender 4.1+ to run the decidable gate."
+fi
+
+echo
+echo "== [5/5] exporter round-trip gate: unmodified byte-exact tier + edit detection (Blender) =="
+if command -v blender >/dev/null 2>&1; then
+  blender --background --python "$HERE/test_export_roundtrip.py"
+else
+  echo "SKIP: 'blender' not on PATH — install Blender 4.1+ to run the exporter gate."
 fi
