@@ -413,6 +413,16 @@ anyone can *check*, not merely trust.
     cosmetic, **stated-tier** (full `FXShaderMaterial` semantics don't map cleanly, per the design doc). **Irrelevant
     to the byte-exact exporter:** team colour isn't in the model bytes; only static shader constants like
     `HouseColorPulse` are, and those already round-trip inside the `<FXShader>` block.
+  - 📋 **(viewer, stated-tier, optional) Additive/translucent FX-mesh blend.** The effect meshes (muzzle/laser glow,
+    flashing lights) are drawn **additive/translucent** in-game but the viewer shows them **solid** — it maps only the
+    base-color texture onto an opaque Principled BSDF and sets no blend mode. Cosmetic, same stated-tier class as the
+    house-colour / NormalMap gaps. **Unlike house colour, the blend data IS in the decoded bytes** — `DefaultW3D.fx`
+    meshes carry `<Int BlendMode>` / `<Int SecondaryTextureBlendMode>` / `<Float Opacity>` / `ColorEmissive` /
+    `DepthWriteEnable` constants — so a future viewer option could map `BlendMode`→Blender `blend_method`
+    (additive→emission+blend), `Opacity`→alpha, `ColorEmissive`→emission for a faithful preview **without inventing
+    data** (still a heuristic approximation of the compiled `.fx`, so stated-tier, not byte-decidable). **Irrelevant to
+    the byte-exact exporter:** those blend constants round-trip verbatim inside the `<FXShader>` block, so an exported
+    mesh keeps its correct in-engine blend regardless of how Blender previews it.
 - 📋 **Community mods as frontier existence-proofs** (research strategy). The KW community has shipped content
   OpenWrath can't yet produce — 4K/HD **texture** add-ons, total-conversion mods with **new geometry**, and
   **particle/FX** patches (e.g. reworked laser effects). Each proves the retail engine *accepts* a kind of non-EA
