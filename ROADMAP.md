@@ -33,11 +33,20 @@ strength: finish what's decidable, then validate the keystone, then the frontier
 4. ✅ **Semantic mesh decode** (packed vertex buffer → positions / normals / UVs / bone influences) — **DONE** (0025):
    `StructReader.ReadSemanticVertexData`, opt-in `bab-decompile --semantic-mesh`; pass-through stays default. Unlocks
    the Blender **viewer**. Next: the Blender add-on proper (item 6), shelling out to this CLI.
-5. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
+5. ✅ **Blender read-only viewer/importer — DONE** (2026-11-26, finding
+   [0026](docs/findings/0026-blender-viewer-importer.md)). A thin CLI front-end (`blender/openwrath_import/` +
+   `openwrath blender install/model/view`) imports a shipped W3D model into Blender — no forked format logic, all
+   bytes via `bab-decompile`. Rigid placement **exact** (`worlds[bone] @ v`); skinned position via the vertex's
+   **channel-0** bone (weights are deform-only), restoring 4-fold symmetry with a per-vertex seam-continuity gate.
+   **Stated-tier** (scene assembly has no byte oracle), with a reported soft-blend seam residual; the earlier
+   centroid-level "verified" was corrected to per-vertex. Verified in-GUI on the NOD Redeemer (quadruped, 99 bones).
+   Next on this thread: the **exporter** (item 6, gated on the 0025 re-pack gate) + semantic `W3DAnimation` decode
+   (keyframes, for live deform / the soft-blend residual).
+6. 📋 **First visible in-game win — loose-file `add-search-path` texture override** (0021 milestone 0). The cheapest
    path to an HD texture *actually rendering in KW* — stated-tier (new content, in-game-acceptance gate),
    modkit/packaging work. The demo moment, and an end-to-end validation of the texture pillar in the real engine.
-6. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **Blender integration**
-   proper (viewer → exporter, gated on 3/4); **new-content authoring** (meshes via the re-pack gate, textures
+7. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **Blender integration**
+   proper (the viewer shipped in item 5 → **exporter**, gated on 3/4); **new-content authoring** (meshes via the re-pack gate, textures
    stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map corpus); **sound** (EALayer3, frontier).
    Detail in the Content-pipeline and Platform sections below.
 

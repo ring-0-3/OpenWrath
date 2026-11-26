@@ -320,5 +320,33 @@ the reuse map must list the *concrete symbols* to call, not just restate "don't 
 
 ---
 
+## Aggregate checks are blind to local defects; scale-sensitive metrics mislead (finding 0026)
+
+Two patterns from the Blender viewer's skinned-placement bug — both inside a *single* asset, both caught only by a
+human looking at real output, not by a green gate.
+
+- **An aggregate/centroid check cannot see a *local* per-vertex defect.** The skinned placement was reported
+  "verified" on a per-mesh **centroid** match — but a few vertices flung 10–15u at a bone seam barely move the
+  centroid. The model's whole skeleton assembled, every centroid matched, the gate was green — and one foot was
+  visibly torn. This is coverage blind spot §1 (*tested what it built ≠ tested what matters*) operating *within*
+  one asset: "the scene assembles" is an aggregate claim that does not imply "every vertex is placed right." The
+  fix was a **per-vertex** seam-continuity assertion (each vertex vs an *alternative* bone's placement). **Rule:**
+  when a correctness property is per-element (per-vertex, per-instance, per-field), the gate must assert it
+  per-element — an aggregate (centroid, total, count, average) will certify a local tear as clean.
+- **A non-scale-invariant metric is confounded by a global transform.** While hunting the cause, a
+  "worst distance-from-neighbour" metric made a *uniform-scale* hypothesis (the per-bone `FixupMatrix`, mostly a
+  1.52× scale) look *worse* — because applying it inflated the whole mesh 1.52×, inflating every distance even
+  though the *shape* was unchanged. That sent review down a dead end (the fixup was a **red herring**: it
+  correlated with a bent prong but was not causal; the real cause was the reference-bone choice). **Rule:** judge
+  a change that may alter global scale/position by a **shape-invariant** property — symmetry, relative continuity,
+  ratios, the in-game reference — never by absolute distances. (And a *correlation* under a scale-confounded
+  metric is not a cause: verify causation before prescribing a fix.)
+
+The through-line with the rest of this doc: the oracle (and any aggregate gate) guards *sampled aggregate
+behaviour*; **per-element correctness and shape fidelity are things a human must look at on real output.** That is
+why the viewer is stated-tier and why the fix was proven by *symmetry*, not a checkmark.
+
+---
+
 *This is living guidance, written alongside the tooling. It exists because the project's speed depends on the
 oracle — and keeping that speed safe depends on knowing exactly what the oracle cannot see.*

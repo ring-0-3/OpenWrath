@@ -1,8 +1,10 @@
 # OpenWrath Model Importer (Blender) — milestone 1: read-only viewer
 
 A Blender add-on that opens a shipped **Kane's Wrath** model (a `W3DContainer` with its
-`W3DHierarchy` and `W3DMesh` assets) in Blender: meshes with correct geometry, an armature
-from the hierarchy, and each mesh parented/skinned to the right bone.
+`W3DHierarchy`, `W3DMesh` and `W3DCollisionBox` assets) in Blender: meshes with correct
+geometry, an armature from the hierarchy, and every sub-object **assembled into the whole
+model** via the skeleton's bind pose (rigid parts placed at their bone; skinned parts
+blend-skinned) — plus collision boxes sized to their real extents.
 
 It is a **thin front-end to the OpenWrath CLI.** It reimplements **no** W3D format logic —
 every byte⇄XML conversion goes through `bab-decompile`; the add-on only translates that XML
@@ -20,12 +22,27 @@ shipped .bin/stream ──bab-decompile --semantic-mesh──▶ W3X XML ──a
 |---|---|
 | `openwrath_import/w3x_xml.py`     | parse decompiled XML → dataclasses. **The one source of format knowledge.** Pure stdlib (no `bpy`). |
 | `openwrath_import/cli.py`         | shell out to `bab-decompile`. Knows only how to *invoke* it. |
-| `openwrath_import/scene_builder.py` | dataclasses → Blender mesh / armature / bindings (the only `bpy` module). |
+| `openwrath_import/scene_builder.py` | dataclasses → Blender mesh / armature / bindings, incl. bind-pose assembly (rigid + blend-skin bake). The only `bpy` module. |
 | `openwrath_import/__init__.py`    | the `File > Import` operator + orchestration. |
 
 ## Install
 
 Requires **Blender 4.1+** (developed and tested on 5.2 LTS).
+
+**Easiest — let the modkit do it** (reads your `~/.config/openwrath/config.toml`):
+
+```bash
+openwrath blender install          # symlinks the add-on into Blender's addons dir
+# then enable it: Edit > Preferences > Add-ons > search "OpenWrath"
+openwrath blender model <CONTAINER>   # decode a whole model (container+hierarchy+meshes+boxes)
+openwrath blender view  <CONTAINER>   # …and launch Blender to import it in one step
+```
+
+`model`/`view` auto-fill `--semantic-mesh --schema --rm --stringhashes` from your config,
+decode into the gitignored `blender/tests/fixtures/local/`, and print the exact
+*File > Import* path. (`model` finds the base stream in your own install; nothing is shipped.)
+
+**Manual install** (no modkit):
 
 1. Zip the add-on package (the folder, not its contents):
    ```bash
@@ -35,7 +52,7 @@ Requires **Blender 4.1+** (developed and tested on 5.2 LTS).
 3. Enable **"OpenWrath Model Importer (Kane's Wrath)"**.
 
 (For development you can instead symlink `blender/openwrath_import` into your Blender
-`scripts/addons/` and use *Reload Scripts*.)
+`scripts/addons/` and use *Reload Scripts* — this is exactly what `openwrath blender install` does.)
 
 ## Import workflow
 
@@ -93,9 +110,23 @@ Two tiers (kept distinct — `docs/design/verification-blind-spots.md` §4):
      data; writes to gitignored `tests/fixtures/local/`) and run the gate against it — that
      converts the gate from "vs belief" to "vs ground-truth-shaped input."
    - **Normals are a STATED tolerance, not bit-exact**: Blender stores custom split normals
-     as int16-encoded directions, so a shipped float32 normal round-trips only to ~1e-4. The
-     importer feeds the exact decoded normals in; the gate's ~2e-4 tolerance covers only
-     Blender's own storage quantisation. We bucket this honestly rather than claim exactness.
+     per-corner as `short[2]` (two int16 angular offsets within the corner's lnor space).
+     Resolution is finest near the reference normal (~1e-4) and coarsest far from it; the
+     worst-case round-trip error **saturates at ~1.35e-2** (characterised over 262144
+     directions, shape-independent — a property of the int16 encoding, not of our data).
+     `NORMAL_TOL = 2.0e-2` (headroom over that ceiling). Across 41 shipped KW meshes
+     (4..2224 verts, skinned+static) the worst observed is **3.78e-3**, well inside it. The
+     importer feeds the exact decoded normals in; the tolerance covers only Blender's encode.
+   - **Placement/assembly is tested** (container gate): each sub-object's built world-space
+     centroid must match its independently-recomputed bind-pose centroid — so "assembled
+     correctly" (rigid at its bone, skinned at its channel-0 bone) is a *decidable* property.
+   - **Seam continuity is tested** (container gate): a centroid check cannot see a *local* tear,
+     so the gate also flags any skinned vertex that a DIFFERENT one of its influencing bones
+     would place much closer to its mesh-neighbours (a wrong-reference-bone tear). A **gross**
+     tear (the max-weight-bone bug) FAILS; small soft-blend residuals are bucketed+reported,
+     not silently passed. This is the check that would have caught the Redeemer foot tears.
+   - Vertices unreferenced by any triangle have no corner, so their loop-derived UV/normal
+     readback is skipped and counted (honest coverage) rather than treated as a diff.
 
 2. **Parser tests** (`tests/test_parser.py`, plain `python3`, no Blender).
 
@@ -119,16 +150,30 @@ by hand:
          Pose mode — the right geometry follows).
    - [ ] **UVs**: open the UV editor — islands are laid out in 0..1, not flipped vertically
          (the decoder already un-flips V; verify the direction once against a textured ref).
-   - [ ] **Collision boxes** appear as separate wire-cube empties, clearly not render geometry.
+   - [ ] **Assembly**: the whole model is coherent (rigid parts in place, skinned legs/body
+         present and upright) — not scattered or collapsed to the origin.
+   - [ ] **Collision boxes** (enable the import toggle — OFF by default) appear as wire-cube
+         empties sized to the unit's real extents, in a separate hideable `<model>_Collision`
+         collection, clearly not render geometry.
 4. Record the result (unit name, patch version, screenshot) as a stated observation.
 
 ## v1 limitations (known, not half-built)
 
-- **No animation.** `W3DAnimation` is still a compressed-channel *byte* pass-through, not
-  keyframes; it needs a separate semantic channel decode. Only the rest pose is imported.
-- **No materials.** `FXShaderMaterial` is not mapped; meshes get Blender's default material.
-- **No textures.** DDS is not loaded. (DDS *display* could be added read-only later; DDS
-  *encoding* is the frontier tier and out of scope.)
+- **No animation — static BIND POSE only.** The model is assembled at its bind pose and bones
+  carry the vertex groups for a future exporter / live-deform tier, but there is no live armature
+  deform or keyframes yet. `W3DAnimation` is still a compressed-channel *byte* pass-through.
+- **Rigid placement is byte-exact; skinned placement is STATED-tier.** Each sub-object's
+  geometry is baked into model space via the bind pose. A **rigid** part is placed exactly at its
+  bone (`worlds[bone] @ v`) — proven. A **skinned** vertex is placed rigidly by its **channel-0
+  (reference) bone** — the slot its position is authored in; weights are deform-only (NOT the
+  max-weight bone, which tore bone seams — the Redeemer foot/Buggy-tyre tears). This assembles
+  the bind pose correctly (verified: the Redeemer's four legs come out symmetric; the seam gate
+  below passes), but a handful of genuine soft-blend vertices still sit a few units off at a bone
+  seam — a known **stated-tier residual**, reported (bucketed) by the gate, never called exact.
+- **No textures/materials — UNTEXTURED.** Every mesh gets a single neutral grey placeholder
+  material so the no-texture state is obvious; the import report says how many meshes imported
+  untextured. `FXShaderMaterial`/DDS are not mapped. (DDS *display* could be added read-only
+  later; DDS *encoding* is the frontier tier and out of scope.)
 - **No exporter.** Read-only. Export is staging step 3, gated on the re-pack equality gate
   (`tools/mesh-repack-gate.sh`), a separate milestone.
 - **Coordinate convention is passed through verbatim** (no axis remap applied). If models

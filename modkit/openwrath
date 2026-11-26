@@ -2647,6 +2647,185 @@ def cmd_init(args) -> int:
     return 0
 
 
+# --- openwrath blender: productize the viewer's decode + addon install -------------------
+# These REUSE the add-on's own decode-invocation builder (blender/openwrath_import/cli.py),
+# so there is exactly ONE place that knows how to call bab-decompile for semantic mesh —
+# shared by the add-on, make_fixture.sh, and this command (blender-integration.md §3).
+def _import_addon_cli(cfg: dict):
+    """Import the add-on's pure-Python cli module (no bpy) so we reuse its decode builder."""
+    ow = cfg.get("openwrath") or str(openwrath_dir())
+    bdir = str(Path(ow) / "blender")
+    if bdir not in sys.path:
+        sys.path.insert(0, bdir)
+    from openwrath_import import cli as bcli      # noqa: E402
+    from openwrath_import import w3x_xml as wx    # noqa: E402
+    return bcli, wx
+
+
+def _blender_addons_dir() -> Path | None:
+    """Highest-version Blender user addons dir (~/.config/blender/<ver>/scripts/addons)."""
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "blender"
+    if not base.exists():
+        return None
+    def ver(p: Path):
+        try:
+            return tuple(int(x) for x in p.name.split("."))
+        except ValueError:
+            return (0,)
+    vers = sorted((p for p in base.iterdir() if p.is_dir()), key=ver)
+    return (vers[-1] / "scripts" / "addons") if vers else None
+
+
+def cmd_blender_install(_args) -> int:
+    """Symlink the add-on into Blender's addons dir (kills the hand-built / dangling-symlink error)."""
+    cfg = read_config()
+    (ow,) = _need(cfg, "openwrath")
+    src = Path(ow) / "blender" / "openwrath_import"
+    if not src.is_dir():
+        sys.exit(f"error: add-on source not found at {src}")
+    addons = _blender_addons_dir()
+    if addons is None:
+        sys.exit("error: no Blender user config found (~/.config/blender/<ver>). "
+                 "Launch Blender once, then re-run.")
+    addons.mkdir(parents=True, exist_ok=True)
+    link = addons / "openwrath_import"
+    if link.is_symlink() or link.exists():
+        if link.is_symlink() and link.resolve() == src.resolve():
+            print(f"already installed: {link} -> {src}")
+        else:
+            sys.exit(f"error: {link} already exists and is not our symlink. Remove it and re-run.")
+    else:
+        link.symlink_to(src, target_is_directory=True)
+        print(f"installed: {link} -> {src}")
+    print("\nnow enable it: Blender > Edit > Preferences > Add-ons > search 'OpenWrath' > tick it.")
+    print("then: File > Import > OpenWrath Model (.xml)")
+    return 0
+
+
+def _decompress_base_stream(cfg: dict, stream: str, no_cache: bool) -> Path:
+    """Locate the base-game big holding <stream>.manifest, extract (cached), RefPack-decompress
+    the 4 stream files into a fresh temp dir, and return it (caller removes it). Same locate +
+    decompress path as `verify` (kept in step; this reads only the user's own install)."""
+    import tempfile
+    (gi,) = _need(cfg, "game_install")
+    sys.path.insert(0, str(LIB))
+    import bigextract, refpack
+    want = f"{stream}.manifest".lower()
+    big = None
+    for cand in sorted(Path(gi).rglob("*.big")):
+        try:
+            if any(want in nm.lower() for nm, _, _ in bigextract.entries(str(cand))):
+                big = cand
+                break
+        except Exception:
+            continue
+    if big is None:
+        sys.exit(f"error: no .big under {gi} contains a '{stream}.manifest' stream.")
+    vlog(f"base stream '{stream}' lives in: {big}")
+    cdir, _hit = ensure_stream_cache(big, stream, big.stem, no_cache)
+    work = Path(tempfile.mkdtemp(prefix="openwrath-blender-"))
+    for ext in _STREAM_EXTS:
+        src = cdir / f"{stream}.{ext}"
+        if not src.exists():
+            continue
+        data = src.read_bytes()
+        out = refpack.decompress(data)[0] if refpack.is_refpack(data) else data
+        (work / f"{stream}.{ext}").write_bytes(out)
+    if not (work / f"{stream}.manifest").exists():
+        sys.exit(f"error: no decompressed {stream}.manifest produced.")
+    return work
+
+
+def _blender_local_dir(cfg: dict) -> Path:
+    """Gitignored local output dir for decoded model XML (never committed, never shipped)."""
+    ow = cfg.get("openwrath") or str(openwrath_dir())
+    d = Path(ow) / "blender" / "tests" / "fixtures" / "local"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _decode_model(cfg: dict, container: str, stream: str, no_cache: bool) -> tuple[Path, Path, int]:
+    """Decode a container + its hierarchy + referenced meshes/collision-boxes into the local dir
+    via the add-on's shared decode builder. Returns (container_xml, outdir, ref_count)."""
+    import shutil
+    bcli, wx = _import_addon_cli(cfg)
+    ow, bm, schema = _need(cfg, "openwrath", "base_manifests", "schema")
+    bab = ["dotnet", str(Path(ow) / "Debug" / "bab-decompile.dll")]
+    rm = ";".join(str(Path(bm) / f"{n}.manifest")
+                  for n in ("global_common_2", "static_common_2", "global_english_2"))
+    sh = _default_stringhashes(cfg)
+    outdir = _blender_local_dir(cfg)
+    work = _decompress_base_stream(cfg, stream, no_cache)
+    try:
+        man = str(work / f"{stream}.manifest")
+
+        def decode(name: str) -> None:
+            argv = bcli.build_decode_argv(
+                bab, man, str(outdir), subcommand="decompile-stream", only=name,
+                schema=schema, ref_manifests=rm, stringhashes=sh)
+            vlog("  " + " ".join(argv))
+            proc = bcli.run_decode(argv)
+            if proc.returncode != 0:
+                sys.stderr.write(proc.stdout[-1500:] + proc.stderr[-800:])
+                sys.exit(f"error: decode failed for '{name}' (rc={proc.returncode}).")
+
+        print(f"decoding container '{container}' from stream '{stream}' ...")
+        decode(container)
+        cxml = outdir / f"W3DContainer.{container}.xml"
+        if not cxml.exists():
+            sys.exit(f"error: '{container}' did not decode to a W3DContainer "
+                     f"(is it a model container? try: openwrath find {container} --type W3DContainer).")
+        cont = wx.parse_container(str(cxml))
+        refs = ([cont.hierarchy] if cont.hierarchy else []) + [
+            s.render_name for s in cont.sub_objects
+            if s.render_name and s.render_kind in ("Mesh", "CollisionBox")]
+        for r in refs:
+            print(f"  + {r}")
+            decode(r)
+        return cxml, outdir, len(refs)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def cmd_blender_model(args) -> int:
+    cfg = read_config()
+    stream = args.stream or "static_common"
+    cxml, outdir, nrefs = _decode_model(cfg, args.container, stream, args.no_cache)
+    print(f"\n✓ decoded '{args.container}' (+ {nrefs} referenced asset(s)) into:\n  {outdir}")
+    print(f"\nin Blender:  File > Import > OpenWrath Model (.xml)  ->  {cxml}")
+    print("  (enable the add-on first with: openwrath blender install)")
+    return 0
+
+
+def cmd_blender_view(args) -> int:
+    """Decode a model, then launch Blender and import it headfully in one step."""
+    import shutil, subprocess
+    cfg = read_config()
+    (ow,) = _need(cfg, "openwrath")
+    stream = args.stream or "static_common"
+    cxml, outdir, nrefs = _decode_model(cfg, args.container, stream, args.no_cache)
+    blender = shutil.which("blender")
+    if not blender:
+        sys.exit("error: 'blender' not on PATH — run `openwrath blender model` and import manually.")
+    # Minimal import-on-launch script (uses the installed/linked add-on package).
+    import tempfile
+    launch = (
+        "import bpy, sys\n"
+        f"sys.path.insert(0, {str(Path(ow) / 'blender')!r})\n"
+        "import openwrath_import\n"
+        f"openwrath_import.import_file({str(cxml)!r}, report=print)\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix="_owview.py", delete=False) as fh:
+        fh.write(launch)
+        tmp = fh.name
+    try:
+        print(f"\nlaunching Blender to view '{args.container}' ...")
+        subprocess.run([blender, "--python", tmp])
+    finally:
+        os.unlink(tmp)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="openwrath", description=__doc__.splitlines()[0])
     # Global -v/--verbose, accepted either before OR after the subcommand. The shared copy uses
@@ -2767,6 +2946,28 @@ def main() -> int:
     sc.add_argument("--drift-only", dest="drift_only", action="store_true",
                     help="show only types whose hash differs from our compiler (the insert-unsafe ones)")
     sc.set_defaults(func=cmd_schema)
+
+    # blender: install the viewer add-on + productize the model decode (config-driven)
+    bl_g = sub.add_parser("blender", parents=[common],
+                          help="install the Blender viewer add-on / decode a model for it"
+                          ).add_subparsers(dest="bcmd", required=True)
+    bli = bl_g.add_parser("install", parents=[common],
+                          help="symlink the add-on into Blender's addons dir")
+    bli.set_defaults(func=cmd_blender_install)
+    blm = bl_g.add_parser("model", parents=[common],
+                          help="decode a container + hierarchy + meshes into the local dir for import")
+    blm.add_argument("container", help="W3DContainer asset name, e.g. NUREDEEMER_SKN")
+    blm.add_argument("--stream", help="base stream to decode from (default: static_common)")
+    blm.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    blm.set_defaults(func=cmd_blender_model)
+    blv = bl_g.add_parser("view", parents=[common],
+                          help="decode a model then launch Blender and import it")
+    blv.add_argument("container", help="W3DContainer asset name, e.g. NUREDEEMER_SKN")
+    blv.add_argument("--stream", help="base stream to decode from (default: static_common)")
+    blv.add_argument("--no-cache", dest="no_cache", action="store_true",
+                     help="bypass the extracted-stream cache (always re-extract)")
+    blv.set_defaults(func=cmd_blender_view)
 
     ver = sub.add_parser("verify", parents=[common],
                          help="byte-exact check of an asset against the GAME'S OWN shipped bytes")

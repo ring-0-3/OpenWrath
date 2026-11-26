@@ -345,6 +345,21 @@ planned **content pipeline**, not the data toolchain; see `../../ROADMAP.md`. (`
 section above and findings 0020/0022/0024. The `Texture`/`OnDemandTexture` record layout was characterized in
 finding 0023 and is now **modeled byte-exact** (0024, shipped-DDS-payload pass-through) — no longer "not modeled".)
 
+## Blender viewer (stated tier — NOT byte-exact)
+
+The `blender/` model importer is a **viewer** tier, separate from the byte-exact data toolchain above
+(finding [0026](../findings/0026-blender-viewer-importer.md)).
+Its decode geometry is bit-exact to the CLI (self-consistency gate), but scene *assembly* is stated:
+
+- **Rigid sub-object placement: proven.** Each rigid part is placed at its bone's bind world matrix
+  (`worlds[bone] @ v`); the container gate's centroid + the collision-hull cross-check confirm it.
+- **Skinned bind-pose: STATED tier, with a known small seam residual.** A skinned vertex is placed by
+  its **channel-0 (reference) bone** (position lives there; weights are deform-only). This assembles the
+  bind pose correctly — verified by 4-fold leg symmetry on the Redeemer and a per-vertex **seam-continuity
+  gate** that FAILS the old max-weight-bone tears (gaps 10–15u) — but a few genuine soft-blend vertices
+  still sit ≤ a few units off at a bone seam. These are **bucketed + reported** by the gate, never called
+  exact. Live skeletal deformation / animation is a later tier.
+
 ## Known decompiler (read-direction) limitations
 
 - **`LogicCommand` instance data isn't recovered on read.** `openwrath inspect`/the decompiler desync on every

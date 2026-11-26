@@ -93,7 +93,7 @@ class AssetResolver:
 # Orchestration (pure; no bpy operator state)
 # --------------------------------------------------------------------------- #
 
-def import_file(filepath, *, resolver=None, import_collision=True, report=print):
+def import_file(filepath, *, resolver=None, import_collision=False, report=print):
     """Import an asset XML into the current scene. Dispatches on asset type.
 
     Returns a short human summary string.
@@ -108,7 +108,8 @@ def import_file(filepath, *, resolver=None, import_collision=True, report=print)
     if atype == "W3DMesh":
         mesh = w3x_xml.parse_mesh(filepath)
         sb.build_mesh(mesh)
-        return f"Imported W3DMesh '{mesh.name}' ({mesh.vertex_count} verts, {len(mesh.triangles)} tris)."
+        return (f"Imported W3DMesh '{mesh.name}' ({mesh.vertex_count} verts, "
+                f"{len(mesh.triangles)} tris) — UNTEXTURED (v1: no materials/textures).")
 
     if atype == "W3DHierarchy":
         hier = w3x_xml.parse_hierarchy(filepath)
@@ -131,19 +132,36 @@ def _import_container(filepath, resolver, import_collision, report):
 
     arm_obj = None
     bone_names = {}
+    worlds = None
     if cont.hierarchy:
         try:
             hpath = resolver.resolve(cont.hierarchy, type_hint="W3DHierarchy")
             hier = w3x_xml.parse_hierarchy(hpath)
-            arm_obj, bone_names = sb.build_armature(hier, collection=coll)
+            arm_obj, bone_names, worlds = sb.build_armature(hier, collection=coll)
         except Exception as e:  # hierarchy optional for a bare view
             report(f"WARNING: could not import hierarchy '{cont.hierarchy}': {e}")
 
-    n_mesh = n_box = 0
+    # Collision boxes live in their OWN child collection so they can be hidden in one click
+    # and never clutter the model (they are limb-sized wire cubes once real extents are applied).
+    box_coll = None
+    n_mesh = n_box = n_box_sized = 0
     for sub in cont.sub_objects:
         if sub.render_kind == "CollisionBox":
             if import_collision:
-                sb.build_collision_box(sub, collection=coll)
+                if box_coll is None:
+                    box_coll = bpy.data.collections.new(f"{cont.name}_Collision")
+                    coll.children.link(box_coll)
+                box = None
+                if sub.render_name:
+                    try:  # the box asset is a modeled type — resolve + decode like any ref
+                        bpath = resolver.resolve(sub.render_name, type_hint="W3DCollisionBox")
+                        box = w3x_xml.parse_collision_box(bpath)
+                        n_box_sized += 1
+                    except Exception as e:
+                        report(f"note: collision box '{sub.render_name}' extents unavailable "
+                               f"(drawing unit cube): {e}")
+                sb.build_collision_box(sub, box=box, arm_obj=arm_obj,
+                                       worlds=worlds, collection=box_coll)
                 n_box += 1
             continue
         if not sub.render_name:
@@ -151,15 +169,22 @@ def _import_container(filepath, resolver, import_collision, report):
         try:
             mpath = resolver.resolve(sub.render_name, type_hint="W3DMesh")
             mesh = w3x_xml.parse_mesh(mpath)
-            mobj = sb.build_mesh(mesh, collection=coll, bone_names=bone_names)
+            mobj = sb.build_mesh(mesh, collection=coll, bone_names=bone_names,
+                                 worlds=worlds, bone_index=sub.bone_index)
             if arm_obj is not None:
-                sb.bind_mesh_to_armature(mobj, arm_obj, sub, bone_names)
+                sb.bind_mesh_to_armature(mobj, arm_obj, sub, bone_names, worlds)
             n_mesh += 1
         except Exception as e:
             report(f"WARNING: could not import mesh '{sub.render_name}': {e}")
 
-    return (f"Imported W3DContainer '{cont.name}': {n_mesh} mesh(es), "
-            f"{len(bone_names)} bone(s), {n_box} collision box(es).")
+    # Signpost the v1 limitation prominently: every mesh is imported without
+    # materials/textures, so a viewer sees untextured (grey) geometry — stated-tier.
+    report(f"{n_mesh} mesh(es) imported UNTEXTURED (v1 — no materials/textures).")
+    box_note = f"{n_box} collision box(es)"
+    if n_box:
+        box_note += f" ({n_box_sized} with real extents)"
+    return (f"Imported W3DContainer '{cont.name}': {n_mesh} mesh(es) [UNTEXTURED v1], "
+            f"{len(bone_names)} bone(s), {box_note}.")
 
 
 # --------------------------------------------------------------------------- #
@@ -182,8 +207,10 @@ def _register_operator():
 
         import_collision: BoolProperty(
             name="Import collision boxes",
-            description="Add collision boxes as wire empties (not render geometry)",
-            default=True,
+            description="Add collision boxes (real extents) as wire empties in a separate, "
+                        "hideable '<model>_Collision' collection. Off by default — they are "
+                        "limb-sized and clutter the model; enable to inspect the hit volumes.",
+            default=False,
         )
         # Optional on-demand decompile — only used when a referenced asset is not
         # already present as a sibling .xml next to the chosen file.

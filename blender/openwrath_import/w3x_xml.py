@@ -120,6 +120,15 @@ class Container:
     sub_objects: list[SubObject] = field(default_factory=list)
 
 
+@dataclass
+class CollisionBox:
+    """A ``W3DCollisionBox`` asset (``AssetTypeW3D.xsd`` L570-581): an oriented box
+    given by its centre and *half*-extents, both in the owning bone's local space."""
+    name: str
+    center: Vec3
+    extent: Vec3                # half-extents (box spans centre ± extent)
+
+
 # --------------------------------------------------------------------------- #
 # XML helpers
 # --------------------------------------------------------------------------- #
@@ -318,3 +327,16 @@ def parse_container(path: str) -> Container:
     if hierarchy:
         hierarchy = hierarchy.split("\\", 1)[0].strip()
     return Container(name=el.get("id", "container"), hierarchy=hierarchy, sub_objects=subs)
+
+
+def parse_collision_box(path: str) -> CollisionBox:
+    el = _asset_root(path)
+    if _local(el.tag) != "W3DCollisionBox":
+        raise ValueError(f"{path}: not a W3DCollisionBox (<{_local(el.tag)}>)")
+    ce = _child(el, "Center")
+    ex = _child(el, "Extent")
+    return CollisionBox(
+        name=el.get("id", "collisionbox"),
+        center=_vec3(ce) if ce is not None else (0.0, 0.0, 0.0),
+        extent=_vec3(ex) if ex is not None else (1.0, 1.0, 1.0),
+    )

@@ -25,7 +25,6 @@ OUT="$ROOT/blender/tests/fixtures/local"
 SCHEMA="${KW_SCHEMA:-$ROOT/schemas/kw/xsd/CnC3Types.xsd}"
 BM="${KW_BASEMANIFESTS:-$HOME/kw-mod-sdk/base-manifests}"
 RM="$BM/global_common_2.manifest;$BM/static_common_2.manifest;$BM/global_english_2.manifest"
-SH_OPT=(); [[ -n "${KW_STRINGHASHES:-}" ]] && SH_OPT=(--stringhashes "$KW_STRINGHASHES")
 
 MODE="${1:-}"; MF="${2:-}"; NAME="${3:-}"
 if [[ -z "$MODE" || -z "$MF" || -z "$NAME" ]]; then
@@ -38,11 +37,15 @@ fi
 export DOTNET_ROLL_FORWARD=LatestMajor DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 mkdir -p "$OUT"
 
+# Route the decode through the ONE shared invocation builder (openwrath_import.cli),
+# never a second inline copy of the bab-decompile command (blender-integration.md §3).
+SH_ARG=(); [[ -n "${KW_STRINGHASHES:-}" ]] && SH_ARG=(--stringhashes "$KW_STRINGHASHES")
 dec_one() {  # dec_one <ASSET_NAME>
   local a="$1"
   echo "  decompiling $a ..."
-  dotnet "$DEC" decompile-stream "$MF" --only "$a" --outdir "$OUT" \
-    --semantic-mesh --schema "$SCHEMA" --rm "$RM" "${SH_OPT[@]}" >/dev/null
+  ( cd "$ROOT/blender" && python3 -m openwrath_import.cli decode \
+      --bab "dotnet $DEC" --manifest "$MF" --outdir "$OUT" --only "$a" \
+      --schema "$SCHEMA" --rm "$RM" "${SH_ARG[@]}" ) >/dev/null
 }
 
 # decompile-stream names files <TypeName>.<name>.xml; find the one for an asset (+ opt type).
@@ -73,8 +76,10 @@ import sys
 from openwrath_import import w3x_xml as wx
 c = wx.parse_container(sys.argv[1])
 if c.hierarchy: print(c.hierarchy)
+# meshes AND collision boxes — both are referenced, decodable assets the importer
+# resolves (collision boxes give the box its real extents + placement).
 for s in c.sub_objects:
-    if s.render_kind == "Mesh" and s.render_name:
+    if s.render_name and s.render_kind in ("Mesh", "CollisionBox"):
         print(s.render_name)
 PY
 )
