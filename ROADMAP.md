@@ -260,6 +260,14 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     override count. (b) **Partial-write detection:** each splice/insert step now verifies **all four** stream files
     exist (not just the manifest), so a truncated write (e.g. `ENOSPC`) fails at its source with the producer's real
     error instead of an opaque `FileNotFoundError` in the next step.
+  - ✅ **String-table editing — custom unit names / tooltips (2026-11-26).** A `[strings]` table in `mod.toml`
+    (`"NAME:GDIPitbull" = "Rift Pet"`, `"DESC:…"`, `"TYPE:…"`) is built by `mod build-local` into a LOCAL-ONLY
+    `<name>-strings.big` and `add-big`'d in the mod skudef — custom in-game names and build-button tooltips with **no
+    CSF compiler and no edit of the BYO `cnc3.csf`**. `modkit/lib/csf.py` is a reusable reader for the compiled
+    `.csf` string table + writer for the plaintext `.str` source the engine also accepts (format reverse-figured +
+    verified vs the shipped 7395-label table; the engine loads **one** table, so the complete table is shipped →
+    LOCAL-ONLY, embeds EA strings, same posture as the overlay big). Zero-EA-public path (ship only the label diff +
+    recipient-side assembler) is future work, mirroring `diff-plus-assemble-at-install`.
   See **[modkit/README.md](modkit/README.md)**. This is the start of the "reliability as a platform" phase:
   make the verified toolchain usable, not just correct.
 

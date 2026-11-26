@@ -543,12 +543,17 @@ def find_target_big_and_stream(cfg: dict, target: str, override_iids: set[int],
 
 
 def _read_mod_spec(proj: Path) -> dict:
-    """Load a project's [mod] table, or exit with a clear error if there's no mod.toml."""
+    """Load a project's [mod] table, or exit with a clear error if there's no mod.toml. The optional top-level
+    [strings] table (label = "text", for custom unit names/tooltips) is carried along under the "strings" key."""
     import tomllib
     toml = proj / "mod.toml"
     if not toml.exists():
         sys.exit(f"error: no mod.toml in {proj}. Create one with: openwrath mod new {proj.name}")
-    return tomllib.loads(toml.read_text()).get("mod", {})
+    doc = tomllib.loads(toml.read_text())
+    spec = doc.get("mod", {})
+    if doc.get("strings"):
+        spec["strings"] = doc["strings"]
+    return spec
 
 
 def _write_mod_spec(proj: Path, spec: dict) -> None:
@@ -1346,7 +1351,7 @@ def _autoorder_forward_refs(cur: Path, stream: str) -> None:
     fix = subprocess.run(["python3", str(LIB / "reorder_stream.py"), pfx, pfx, "--auto-fix"],
                          capture_output=True, text=True)
     out = (fix.stdout + fix.stderr).strip()
-    if "no FATAL forward references" in out:
+    if "no forward references to resolve" in out:
         return                                  # nothing to do; assemble-time checksum still valid
     print("  forward-ref auto-order (finding 0011):")
     print("    " + out.replace("\n", "\n    "))
@@ -1357,6 +1362,32 @@ def _autoorder_forward_refs(cur: Path, stream: str) -> None:
     if gate.returncode != 0:
         sys.exit("error: forward-reference auto-order did not clear all FATAL edges:\n" + gate.stdout + gate.stderr)
     print("    ✓ 0 fatal forward references remain")
+
+
+def _build_strings_big(spec, name, outdir, cfg, pack_big):
+    """If mod.toml declares a [strings] table (label = "text"), build a LOCAL-ONLY `<name>-strings.big` carrying
+    a COMPLETE `data\\cnc3.str` — the user's OWN base cnc3.csf with the declared label edits applied. Lets a mod
+    rename units / rewrite tooltips. Returns the big Path (or None). The engine loads ONE string table, so the
+    complete table is shipped (it embeds EA's strings → LOCAL-ONLY, same posture as the overlay big)."""
+    strings = spec.get("strings") or {}
+    if not strings:
+        return None
+    (game_install,) = _need(cfg, "game_install")
+    base_csf = Path(game_install) / "Patch103" / "MapData" / "cnc3.csf"
+    if not base_csf.exists():
+        base_csf = next((p for p in [Path(game_install) / "Launcher" / "english.csf",
+                                     *Path(game_install).rglob("cnc3.csf")] if p.exists()), None)
+        if not base_csf:
+            sys.exit(f"error: [strings] declared but no base cnc3.csf found under {game_install}")
+    sys.path.insert(0, str(LIB)); import csf
+    labels = csf.read_csf(str(base_csf))
+    data, applied = csf.to_str_bytes(labels, strings)
+    big = outdir / f"{name}-strings.big"
+    pack_big.pack(str(big), [("data\\cnc3.str", data)])
+    print(f"  strings: {len(labels)} labels from {base_csf.name}, {len(applied)} edit(s) → {big.name} (LOCAL-ONLY)")
+    for lbl, old, new in applied:
+        print(f"    {lbl}: {old!r} → {new!r}")
+    return big
 
 
 def cmd_mod_build_local(args) -> int:
@@ -1477,8 +1508,12 @@ def cmd_mod_build_local(args) -> int:
         if not big_is_complete(bigpath):
             sys.exit("error: the packed big failed its integrity check (not a complete BIG4) — refusing.")
 
-        # 6. the mod's own SkuDef + a LOCAL-ONLY readme (loud about EA-derived / do-not-share).
-        (outdir / f"{name}.skudef").write_text(f"add-big {name}.big\n", encoding="utf-8")
+        # 5b. optional [strings] table in mod.toml → a LOCAL-ONLY <name>-strings.big (custom unit names/tooltips).
+        strings_big = _build_strings_big(spec, name, outdir, cfg, pack_big)
+
+        # 6. the mod's own SkuDef (add-big each big) + a LOCAL-ONLY readme (loud about EA-derived / do-not-share).
+        sku_lines = [f"add-big {name}.big"] + ([f"add-big {strings_big.name}"] if strings_big else [])
+        (outdir / f"{name}.skudef").write_text("\n".join(sku_lines) + "\n", encoding="utf-8")
         _write_local_readme(outdir, name, cfg, stream, big.name)
 
         # 7. optional: install into Mods/ (owned folder; never touches EA files).
@@ -1492,6 +1527,8 @@ def cmd_mod_build_local(args) -> int:
                 os.fsync(fh.fileno())
             if not big_is_complete(dest / f"{name}.big"):
                 sys.exit("error: the installed big failed its integrity check — refusing.")
+            if strings_big:
+                shutil.copy2(strings_big, dest / strings_big.name)
             shutil.copy2(outdir / f"{name}.skudef", dest / f"{name}.skudef")
             installed = dest
 

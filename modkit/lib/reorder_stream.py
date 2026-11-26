@@ -121,9 +121,14 @@ def _toposort(nodes, edges):
 
 
 def perm_autofix(in_prefix):
-    """Build a permutation that eliminates every FATAL forward edge, or None if there are none."""
+    """Build a permutation that eliminates forward edges that must be fixed, or None if there are none.
+    Fixes: FATAL (weapon -> projectile/warhead, proven in-game) PLUS the GameObject -> WeaponTemplate SUSPECT
+    subset (a unit referencing its own weapon, e.g. FireWeaponUpdate/WeaponSetUpdate). The latter isn't
+    separately in-game-proven, but it's the same eager-template-binding mechanism and moving a weapon EARLIER
+    is always safe (it can never break an existing backward edge), so we fix it pre-emptively."""
     buckets, _, _ = cfr.scan(in_prefix + '.manifest')
-    fatal = buckets['FATAL']
+    extra = [e for e in buckets['SUSPECT'] if e[2] == 'GameObject' and e[5] == 'WeaponTemplate']
+    fatal = buckets['FATAL'] + extra
     if not fatal:
         return None, []
     edges = [(si, ti) for (si, _, _, ti, _, _) in fatal]
@@ -161,11 +166,11 @@ def main():
             if inp != outp:
                 for ext in ('manifest', 'bin', 'relo', 'imp'):
                     shutil.copyfile(inp + '.' + ext, outp + '.' + ext)
-            print("auto-fix: no FATAL forward references — nothing to reorder.")
+            print("auto-fix: no forward references to resolve — nothing to reorder.")
             return
         apply_permutation(inp, outp, perm)
         print(f"auto-fix: moved {len(set(t for _,_,_,t,_,_ in fatal))} forward-referenced template(s) "
-              f"ahead of their referrer(s) to clear {len(fatal)} FATAL forward edge(s):")
+              f"ahead of their referrer(s) to clear {len(fatal)} forward edge(s):")
         for (si, sn, st, ti, tn, tt) in fatal:
             print(f"    {sn}  ->  {tn}  (was +{ti - si})")
         print("NOTE: run retag_checksum.py on the OUTPUT prefix next.")
