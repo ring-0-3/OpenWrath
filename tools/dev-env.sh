@@ -56,6 +56,16 @@ fi
 # Defaults — override in tools/dev-env.local
 : "${KW_SDK:=$HOME/kw-mod-sdk}"                              # the Kane's Wrath Mod SDK checkout
 : "${KW_DATAROOT:=$KW_SDK/KanesWrathXMLFiles}"              # SDK asset XML (compiler data root)
+# KW_BASEMANIFESTS: pick the first NON-EMPTY base-manifests dir among known locations. An empty
+# leftover dir (e.g. a half-finished `extract-manifests`) must NOT shadow the real one: an empty
+# default silently resolves `-rm` to missing files, which makes the round-trip gates hard-abort
+# with a spurious "INPUT DRIFT" (verify-inputs reports every baselined manifest MISSING) that reads
+# like corruption but is only a path problem.
+if [ -z "${KW_BASEMANIFESTS:-}" ]; then
+    for _bm in "$HOME/kw-mod-sdk/base-manifests" "$HOME/cnc-kw-sdk/base-manifests" "$HOME/cnc-kw-godmod/base-manifests"; do
+        if [ -d "$_bm" ] && [ -n "$(ls -A "$_bm" 2>/dev/null)" ]; then KW_BASEMANIFESTS="$_bm"; break; fi
+    done
+fi
 : "${KW_BASEMANIFESTS:=$HOME/kw-mod-sdk/base-manifests}" # RefPack-decompressed base-stream manifests (-rm)
 : "${KW_SCHEMA_SRC:=}"                                       # dir that CONTAINS kw/xsd/CnC3Types.xsd (for symlink)
 
@@ -74,7 +84,11 @@ export DOTNET_ROLL_FORWARD=LatestMajor DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLO
 
 # 4) validate + report
 _dev_ok=1
-_chk() { if [ -e "$2" ]; then echo "  [ok]   $1 = $2"; else echo "  [MISS] $1 = $2"; _dev_ok=0; fi; }
+_chk() {
+    if [ ! -e "$2" ]; then echo "  [MISS] $1 = $2"; _dev_ok=0
+    elif [ -d "$2" ] && [ -z "$(ls -A "$2" 2>/dev/null)" ]; then echo "  [MISS] $1 = $2  (empty dir)"; _dev_ok=0
+    else echo "  [ok]   $1 = $2"; fi
+}
 echo "dev-env: Kane's Wrath toolchain ($KWT_ROOT)"
 _chk "KW_SCHEMA      " "$KW_SCHEMA"
 _chk "KW_DATAROOT    " "$KW_DATAROOT"
