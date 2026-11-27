@@ -14,8 +14,9 @@ tools that come with their own proof that they work, and docs that explain the f
 | **`BinaryAssetBuilder`** (compiler) | authoring XML → compiled SAGE asset streams, byte-faithful to EA's output. A Linux port of [Qibbi/BinaryAssetBuilder](https://github.com/Qibbi/BinaryAssetBuilder). |
 | **`bab-decompile`** (decompiler) | compiled asset streams → authoring XML. The structural *inverse* of the compiler, so its output recompiles **byte-identically**. |
 | **`pytools/`** | BIG4 archive pack/extract, RefPack (de)compression, and stream/manifest inspect + splice utilities — the rest of the mod pipeline. |
-| **`modkit/`** | `openwrath` — a config-driven developer CLI that drives the above: `detect`/`show` your setup, `mod bake` (compile overrides + splice into a stream + install), `mod revert`. Ships no game data. |
-| **`tools/`** | `roundtrip.sh` / `corpus-roundtrip.sh` (the correctness gate), `verify-inputs.py` (bring-your-own input-integrity preflight — refuses the gate on drifted inputs), `dev-env.sh` (one-command dev setup), `kw-compile.sh`. |
+| **`modkit/`** | `openwrath` — a config-driven developer CLI that drives the whole pipeline: set up (`detect`/`init`), explore (`trace`/`uses`), author (`mod new`/`add`, `mod check`), build & install (`mod bake`, `mod build-local`, `mod package`), toggle (`mod activate`/`deactivate`), and **edit unit textures** (`texture override`/`encode` → record overlay → in-game). Ships no game data. |
+| **`blender/`** | A Blender add-on — a *thin front-end to the CLI* (no forked format logic). Import a shipped W3D model, see its real textures, edit it, and **export it back byte-exact** (unmodified) or stated-tier (edited). `openwrath blender install` / `model` / `view`. |
+| **`tools/`** | `roundtrip.sh` / `corpus-roundtrip.sh` (the correctness gate), `mesh-repack-gate.sh` + `blender-roundtrip-gate.sh` (the Blender byte-exact gates), `verify-inputs.py` (bring-your-own input-integrity preflight — refuses the gate on drifted inputs), `dev-env.sh` (one-command dev setup), `kw-compile.sh`. |
 
 ## Reliability is measured, not claimed
 
@@ -46,12 +47,23 @@ DXT-compressed DDS), OpenWrath **passes those bytes through** in their shipped f
 — byte-exact where a re-encoder never could be. (Sample-verified against shipped `static_common`, honestly bucketed
 — see COVERAGE.)
 
+**You can edit models and textures in Blender — reaching the game, with the oracle kept honest.** A Blender
+add-on (a thin front-end to the CLI, no forked format logic) imports a shipped W3D model with its real textures,
+and **exports it back**. The claim is tiered, never conflated: an *unmodified* model round-trips **byte-exact**
+(proven by `tools/blender-roundtrip-gate.sh` — `decode ∘ Blender save/reload ∘ export ∘ packer == shipped` across
+the whole W3D graph; the packer itself is validated by the re-pack gate, `tools/mesh-repack-gate.sh`), while an
+*edited* model or texture is **stated-tier** ("the game loads + renders it") — new pixels/geometry have no shipped
+bytes to be exact against, so they are never reported byte-exact. **Editing a unit's texture reaches retail 1.3
+today and is confirmed in-game** (a Blender-painted skin rendering on the Nod Redeemer), delivered as a `Texture`
+record overlay — EA's own method — via `openwrath texture override` → `mod build-local` → `mod activate`. See the
+**[your-first-mod tutorial](docs/tutorials/edit-a-unit-texture-in-blender.md)**.
+
 **Inputs are verified too, not just outputs.** A committable `inputs.sha256` baseline + a `verify-inputs`
 preflight make the round-trip gate **refuse to run on a drifted bring-your-own input**, so a "verified" result
-can never silently rest on a mutated schema or stream. In progress: the developer modkit, wider per-type
-coverage, and the next frontier — **textures** (a stated weaker tier: EA's compressor can't be bit-reproduced).
-See **[ROADMAP.md](ROADMAP.md)** for what's done and planned (incl. the art/asset content pipeline, Nix packaging,
-and docs/tutorials).
+can never silently rest on a mutated schema or stream. The frontier now is **new-content authoring** (new
+meshes/units — on the verified packer; new textures/audio — a stated weaker tier, since EA's compressors can't be
+bit-reproduced) and **wider per-type coverage**. See **[ROADMAP.md](ROADMAP.md)** for what's done and planned
+(incl. the content pipeline, Nix packaging, and docs/tutorials).
 
 ## Quick start
 

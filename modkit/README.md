@@ -19,15 +19,41 @@ tools. It does not replace them; it drives them.
 ## Quickstart
 
 ```sh
-modkit/openwrath init                # guided setup: detect + confirm bring-your-own paths + write config
-modkit/openwrath show                # print the resolved config and flag anything missing or moved
-modkit/openwrath mod bake <project>  # compile a mod's overrides + splice them into its target stream + install
-modkit/openwrath mod revert <target> # restore a target's big from the last openwrath backup
+modkit/openwrath init                  # guided setup: detect + confirm bring-your-own paths + write config
+modkit/openwrath show                  # print the resolved config and flag anything missing or moved
+modkit/openwrath trace <unit>          # walk a unit → weapons → projectiles → effects (what to mod)
+modkit/openwrath uses <asset>          # reverse refs: what REFERENCES this asset (spot shared templates)
+modkit/openwrath mod new <project>     # scaffold a mod project
+modkit/openwrath mod add <project> <asset>  # pull an asset in as an editable override
 modkit/openwrath mod check <project>   # pre-flight: dangling refs / unknown fields / schema drift (file:line)
+modkit/openwrath mod bake <project>    # compile overrides + splice into the target stream + install
+modkit/openwrath mod build-local <project>  # assemble a COMPLETE loadable static_mod overlay (LOCAL-ONLY)
+modkit/openwrath mod activate <name>   # switch a built overlay on (backed-up, reversible master-SkuDef swap)
+modkit/openwrath mod deactivate <name> # switch it off again
 modkit/openwrath mod package <project> # build the zero-EA overlay DIFF (shareable via assemble-at-install)
+modkit/openwrath mod revert <target>   # restore a target's big from the last openwrath backup
 # Loadable base-game override mod on retail 1.3 is SOLVED — the proven recipe + builder: docs/findings/0017,
 # modkit/lib/build_overlay.py (sparse differential + low-LOD twin + worldbuilder companion + 3 .version redirects).
 ```
+
+### Edit a unit's texture / view a model in Blender
+
+```sh
+modkit/openwrath blender install              # symlink the add-on into Blender (then enable it in Preferences)
+modkit/openwrath blender view <container>     # decode a shipped model + its textures and open it in Blender
+modkit/openwrath texture override <project> --record <R> --image skin.png
+                                              # encode a format-matched DDS + author a <Texture><Payload> override
+modkit/openwrath texture override <project> --record <R> --solid FF00FF   # no encoder? a solid-colour smoke test
+# then: mod build-local <project> --install → mod activate <name> → launch KW.  See the tutorial:
+#   docs/tutorials/edit-a-unit-texture-in-blender.md
+```
+
+Texture **editing** is the **§4 frontier — stated-tier, never byte-exact** (EA's DXT compressor isn't
+bit-reproducible); the in-game render is the oracle. The overlay it builds is **LOCAL-ONLY** and **not** inherently
+C&C-Online/replay-safe (a record overlay changes stream identity). DDS encoding uses an **external** encoder you
+install (`nvcompress` recommended), never a hand-rolled compressor. The reliable route is a `Texture` **record
+overlay** (findings 0030/0031) — the loose-file `add-search-path` route does **not** work for record-backed unit
+skins on retail 1.3 (finding 0029).
 
 **`init` is the one command to start with.** It runs auto-detection, then for each bring-your-own
 path it searches the usual places, offers what it finds (just press Enter to accept), validates
@@ -117,6 +143,23 @@ See `config.example.toml` for the full schema.
       loads) is an **error**; a ref to an unmodeled type (Texture / W3D / audio, whose streams are outside the
       check's reference scope) is an **unverifiable warning** — so it never false-aborts on runtime art imports,
       and *self-heals* (those refs promote to errors automatically once their types are modeled).
+- [x] `uses` — reverse reference walk (what REFERENCES an asset), so you spot shared templates before editing one.
+- [x] `mod build-local` — assemble a **COMPLETE, loadable `static_mod` overlay** locally from the running patch's
+      overlay + your overrides (the `0017` complete-entry-list assembler; **LOCAL-ONLY**, never shareable). Auto-orders
+      forward `ProjectileNugget` refs so projectile mods just work (`docs/findings/0011`); supports a `[strings]`
+      table for custom unit names/tooltips without a CSF compiler (`modkit/lib/csf.py`).
+- [x] `mod activate` / `deactivate` — reversible, backed-up (`.openwrath-orig`), idempotent master-SkuDef swap, with
+      online-safety + `0017` mutual-exclusivity + game-running guards. Closes the edit→build→**run** loop.
+- ✅ **Edit a unit's texture → in-game (DONE, confirmed in-game — `docs/findings/0029`/`0030`/`0031`).**
+      `texture override` reads a shipped `Texture` record's format, encodes a **format-matched** DDS (via an external
+      encoder — `nvcompress`/`nvtt_export`/`texconv`, never hand-rolled; `--solid` is a no-encoder smoke test), and
+      authors a `<Texture><Payload>` override; `texture encode` is the standalone step. Delivered as a **record
+      overlay** (`build-local`) — EA's own method; the loose-file `add-search-path` route does **not** work for
+      record-backed unit skins on 1.3 (`0029`). **Stated-tier, never byte-exact; LOCAL-ONLY; not online-safe.**
+- ✅ **Blender integration — viewer + byte-exact exporter (DONE — `docs/findings/0026`/`0028`).** `blender install`
+      (symlink the add-on), `blender model` / `view` (decode a model + its textures and open it). The add-on is a
+      **thin front-end to the CLI** — no forked format logic. Imports geometry + skeleton + real textures; **exports**
+      an *unmodified* model back **byte-exact** (gated by `tools/blender-roundtrip-gate.sh`), edited content stated-tier.
 - [ ] base-game-target guard — default to mod targets; require an explicit flag + warning to splice base-game
       streams (avoids C&C:Online / replay desync).
 - [ ] installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler, so setup is
