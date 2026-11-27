@@ -63,7 +63,7 @@ strength: finish what's decidable, then validate the keystone, then the frontier
      else rebuilds from live geometry (**stated tier**, edits reported, never byte-exact). The gate bounds the
      exporter to the 0025-verified packer paths (no half-float / Xenon / >2 weights). No compiler/comparator/schema/
      BYO file touched; regressions clean (0025 gate, Armor 207/207, Weapon 456/456, schema-selftest, 0026/0027 tests).
-7. ✅/📋 **First visible in-game win — edit a unit texture, see it in KW.** The loose-file `add-search-path` route
+7. ✅ **First visible in-game win — edit a unit texture, see it in KW (DONE, confirmed in-game 2026-11-27).** The loose-file `add-search-path` route
    (0021 milestone 0) was tested and **does NOT work** for record-backed unit skins on retail 1.3
    ([0029](docs/findings/0029-loose-file-texture-override-does-not-shadow-record-backed-unit-textures-on-1.3.md)); the
    reliable route is a **`Texture` record overlay** (EA's own method), **proven in-game**
@@ -71,8 +71,10 @@ strength: finish what's decidable, then validate the keystone, then the frontier
    edit→package→run loop** ([0031](docs/findings/0031-convenient-texture-edit-to-in-game-loop.md)): `openwrath texture
    override` (format-matched DDS encode + `<Texture><Payload>` authoring) → `mod build-local --install` → `mod
    activate`/`deactivate`, plus a Blender **Export ▸ OpenWrath Texture Edit** operator. Stated-tier (new pixels,
-   in-game-acceptance gate), LOCAL-ONLY, not online-safe. **Remaining:** the user's in-game confirmation of a real
-   painted skin; the shareable **zero-EA diff** form; `OnDemandTexture`/file-backed routes.
+   in-game-acceptance gate), LOCAL-ONLY, not online-safe. **Confirmed in-game:** a real Blender-painted *multi-record*
+   custom skin (a Hatsune Miku repaint across `NURedeemer`/`NURedeemer2`/`NURedeemer3`, `nvcompress`-encoded) rendered
+   on the Nod Redeemer, team-colour intact, no crash — and a tutorial (`docs/tutorials/edit-a-unit-texture-in-blender.md`)
+   captures the workflow. **Remaining:** the shareable **zero-EA diff** form; `OnDemandTexture`/file-backed routes.
 8. 📋 **Then the big pillars** (each its own effort — choose by goal, not forced order): **new-content authoring**
    (meshes via the re-pack gate, textures stated-tier, audio); **maps** (greenfield `.map` reader + writer, 96-map
    corpus); **sound** (EALayer3, frontier). (Blender integration's viewer+exporter are now the critical-path item 6.)
@@ -255,9 +257,17 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
   - 📋 installable command — a `pipx`-installable `openwrath` that locates or fetches the compiler binary, so
     setup is "install + init" rather than "clone + build".
   - 📋 **GameObject-override robustness — three real bugs hit modding the GDI construction yard (2026-11-25).**
-    (a) **Unnamed stock modules block an `inheritFrom` override.** When a stock GameObject carries a module with
-    no `id` (the GDI conyard's `StructureUnpackUpdate`), `mod check` + the compiler reject an `inheritFrom`
-    override of it (`has an unnamed module …`). Auto-name unnamed base modules (or let the override proceed).
+    (a) **Unnamed stock modules — `mod check` FALSE-fails an override that actually compiles and runs.** When a
+    stock GameObject carries a module with no `id` (every unfolding structure's `StructureUnpackUpdate` — all GDI +
+    Nod base buildings), `mod check` reports `has an unnamed module …` as a **fatal error**. But this is
+    check over-strictness, **not** a real block: the override compiles (the asset is emitted) and **runs in-game** —
+    the `hitscan-and-money` mod's GDI `fastbuild.xml` (9 such structures) is proven working, and the Nod equivalent
+    (21 structures, finding [0031](docs/findings/0031-convenient-texture-edit-to-in-game-loop.md) fast-test overlay)
+    built + ran the same way. The base ships these exact unnamed modules and the game runs them, so the override
+    (base + a BuildTime/BuildCost change) is fine. **Impact:** it forces `--no-check`, which throws out ALL
+    pre-flight validation. **Fix (check-side):** downgrade the `unnamed module` compiler diagnostic to a warning for
+    a REPLACE/`inheritFrom` override whose base is unmodified in that respect (don't fail the whole build); separately,
+    optionally auto-name unnamed base modules so authors *can* target them.
     (b) **The `mod package` block-extractor (`_find_toplevel_block`) is indent-sensitive.** A full/decompiled
     override whose indentation isn't uniform gets its element body truncated in the assembled `static.xml`
     (`GameObject start tag … does not match end tag of AssetDeclaration`). Make block extraction tag-depth-based,
@@ -342,10 +352,23 @@ never report a stated tier as byte-exact ([verification-blind-spots](docs/design
     mangling `BinaryAssetBuilder`→`aryAssetBuilder` at the wrap) but **not** the exception message, and **nothing from
     stderr**. The actual cause was only visible by re-running `Debug/BinaryAssetBuilder.dll` by hand. Fix: surface the
     first `Error:`/`Exception` line from stdout+stderr, not a fixed-size tail.
-  - 📋 **No one-command mod activate/deactivate.** Activation is still a manual master-SkuDef `add-config` edit, and
-    overlay families are mutually exclusive (0017) so testing a second `static_mod` mod means hand-swapping the
-    active one out and back. An `openwrath mod activate/deactivate <name>` (backup + swap the `static_mod` slot,
-    like the ad-hoc activate/restore scripts written for this test) would close the edit→build→**run** loop.
+  - 📋 **`mod check` FALSE dangling-ref errors — reference scope is too narrow.** The check loads only
+    `global_common_2` + `static_common_2`, so a base asset that lives in `static_common` (or `_1`) reads as a FATAL
+    dangling ref even though it resolves in the complete assembled stream (hit on `NODRefinery` →
+    `AttributeModifier_DoesContainTiberium` and `NODTiberiumLiquidationFacility` → `OCL_NODVeinDetonationTrigger`;
+    GDI `fastbuild.xml` hits the identical `GDIRefinery` case). Combined with (a) above, this is why the proven
+    instant-build overlays can only build with `--no-check`. **Fix:** load the full static chain
+    (`static_common` + `_1` + `_2`) into the check's reference scope, matching what `build-local` assembles against,
+    so an in-base ref isn't reported as dangling. (Pairs with the scope-driven severity rule of finding 0015.)
+  - 📋 **Opaque XML-parse error when a source has `--` in a comment.** `declared_overrides` / `_check_sources` parse
+    sources with stdlib `ElementTree`, which (per the XML spec) rejects `--` inside a comment — but the compiler
+    tolerates it, so a source that compiles fine aborts the modkit with a bare `ParseError: not well-formed … line N,
+    col C` and **no filename**. Hit authoring a fast-build file whose comment mentioned the `no-check` flag with a
+    double dash. **Fix:** catch the `ParseError`, name the offending file + line, and hint at `--`-in-comment.
+  - ✅ **One-command mod activate/deactivate (finding [0031](docs/findings/0031-convenient-texture-edit-to-in-game-loop.md)).**
+    `openwrath mod activate <name>` / `deactivate [<name> | --all]` back up the pristine master SkuDef
+    (`.openwrath-orig`), add/remove exactly the mod's `add-config` line, warn on static-overlay mutual exclusivity
+    (0017) + online safety (0030), and refuse while the game is running — closing the edit→build→**run** loop.
 
 ## Platform & extensibility
 OpenWrath is meant to be *built on*. Each item rests on the same idea as the verification gate: correctness

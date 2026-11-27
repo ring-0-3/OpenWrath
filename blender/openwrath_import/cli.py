@@ -65,7 +65,8 @@ def resolve_bab_cmd(hint: str = "") -> list[str]:
     found = shutil.which("bab-decompile")
     if found:
         return [found]
-    here = os.path.dirname(os.path.abspath(__file__))
+    # realpath so a symlink-installed add-on still finds the repo's Debug/ (see resolve_openwrath_cmd).
+    here = os.path.dirname(os.path.realpath(__file__))
     cur = here
     for _ in range(6):
         cand = os.path.join(cur, "Debug", "bab-decompile.dll")
@@ -90,7 +91,10 @@ def resolve_openwrath_cmd(hint: str = "") -> list[str]:
     found = shutil.which("openwrath")
     if found:
         return [found]
-    here = os.path.dirname(os.path.abspath(__file__))
+    # realpath (not abspath) so this works when the add-on is installed as a SYMLINK into
+    # Blender's addons dir (the normal `openwrath blender install` layout) — abspath would walk
+    # up from ~/.config/blender/… and never find the repo's modkit/openwrath.
+    here = os.path.dirname(os.path.realpath(__file__))
     cur = here
     for _ in range(6):
         cand = os.path.join(cur, "modkit", "openwrath")

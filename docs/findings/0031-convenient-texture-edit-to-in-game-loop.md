@@ -1,8 +1,18 @@
 # 0031 — The convenient Blender texture-edit → in-game loop (on the proven record-overlay route)
 
-**Status:** Tooling built + decidable sub-anchors green (2026-11-27). In-game acceptance (the §4 oracle) is the
-**user's step** — steps below. **Frontier / §4 — stated-tier, NEVER byte-exact** (editing/encoding pixels has no byte
-oracle; EA's DXT compressor isn't bit-reproducible — `docs/design/verification-blind-spots.md` §4).
+**Status:** Tooling built + decidable sub-anchors green, **and CONFIRMED in-game (2026-11-27)** — a real,
+Blender-painted **multi-record** skin (a Hatsune Miku repaint across `NURedeemer` + `NURedeemer2` + `NURedeemer3`)
+rendered on a Nod Redeemer on retail 1.3, no crash, encoded with **`nvcompress`** (NVIDIA Texture Tools). The full
+edit→export→build→play loop works with a real encoder, not just the synthetic `--solid` control. **Frontier / §4 —
+stated-tier, NEVER byte-exact** (editing/encoding pixels has no byte oracle; EA's DXT compressor isn't
+bit-reproducible — `docs/design/verification-blind-spots.md` §4).
+
+> **In-game confirmation (the §4 oracle, 2026-11-27).** Painted in Blender Texture Paint (on the model — the 2D
+> Image-Editor face-mask is unreliable, see gaps), exported with **Active object only OFF** to capture all three skin
+> records (authored 7 overrides — the 3 skins + 4 incidental scene effect textures, see gaps), built into the active
+> `hitscan-and-money` overlay via `build-local --install --no-check`, launched on a standard map. Miku showed on the
+> chest, shoulders, shields, and legs. The route is exactly 0030's; this finding's contribution — the convenient
+> tooling — is now end-to-end validated.
 
 > Builds the *convenient* edit→package→run loop on the delivery route **already proven in-game** by
 > [0030](0030-record-overlay-texture-override-works-on-1.3.md) (record overlay WORKS) — **not** the loose-file route
@@ -89,6 +99,31 @@ A full recolor = override the unit's other skin records too (e.g. the Redeemer's
   full chain (an arbitrary count errors); `--solid` covers DXT1/DXT5/A8R8G8B8; multi-record units need one `--record`
   each; `OnDemandTexture`/loose textures are a different (unproven-for-units) route; SkuDef line placement is appended
   (0030 worked — if an overlay doesn't take effect, load order may matter, 0017).
+
+## Bugs the first real in-game run surfaced (fixed 2026-11-27)
+
+- **Add-on CLI auto-detect failed when installed as a symlink.** `cli.resolve_openwrath_cmd` / `resolve_bab_cmd`
+  walked up from `os.path.abspath(__file__)`, but `openwrath blender install` symlinks the add-on into Blender's
+  addons dir — abspath doesn't follow the link, so it walked up from `~/.config/blender/…` and never found
+  `modkit/openwrath`, falling back to a bare `openwrath` (→ `Errno 2`). **Fix:** use `os.path.realpath(__file__)`
+  (verified it resolves through a symlink to the repo CLI). Workaround meanwhile: type the CLI path in the export
+  dialog's *openwrath CLI* field.
+- **`_save_image_png` crashed restoring a DDS image's empty `file_format`.** A Blender image loaded from a `.dds`
+  reports `file_format == ""`; the save helper set it to `"PNG"` then restored the original `""`, which Blender
+  rejects as an invalid enum (`enum "" not found in (...)`). Only bit the **Active-object-only-OFF** path (the first
+  image, `NURedeemer`, happened to have a valid format). **Fix:** only restore a non-empty format, and never let the
+  restore raise (the save already happened).
+
+## Gaps the real run also exposed (not yet fixed)
+
+- **Active-object-only-OFF sweeps in incidental scene textures.** It exported 7 overrides — the 3 wanted skins plus
+  4 effect textures (`FXBlast01`/`FXElectricity`/`FXLenzFlare02`/`FXMuzzle`) that were loaded in the scene but never
+  edited. They're re-encoded from their originals (format-matched, so harmless — at worst a hair of DXT loss), but a
+  clean mod shouldn't re-ship untouched EA effect textures. Future: export only *dirty* images (Blender marks edited
+  image datablocks), or let the operator take an explicit record allow-list.
+- **The 2D Image-Editor face-mask is unreliable for painting.** Face-select masking protects painting in the 3D
+  viewport but, in the tested Blender, **not** in the 2D UV/Image editor — paint bled past the selection there. The
+  tutorial now steers users to paint on the model (mask works) or composite the atlas externally + `--image`.
 
 ## Reused symbols (review: no second DDS/record/overlay path)
 

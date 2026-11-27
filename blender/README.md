@@ -124,6 +124,10 @@ proves Blender's datablocks (not a sidecar) carried every authoring attribute. I
 
 ## Texture edit → in-game (stated-tier; finding 0031)
 
+> **Step-by-step walkthrough:** [docs/tutorials/edit-a-unit-texture-in-blender.md](../docs/tutorials/edit-a-unit-texture-in-blender.md)
+> — decode → paint → export → build → play, with troubleshooting. The summary below is the quick reference.
+
+
 `File > Export > OpenWrath Texture Edit (→ in-game)` with a **textured** imported model:
 
 - edit the base-color image(s) in Blender's Image/UV editor (the importer tagged each with its

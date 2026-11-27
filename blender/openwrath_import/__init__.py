@@ -412,7 +412,14 @@ def _save_image_png(img, path):
         img.filepath_raw = path
         img.save()
     finally:
-        img.file_format = prev_fmt
+        # Restore the originals. A DDS-loaded image reports file_format == "" (not a valid
+        # enum value to assign back), so only restore a non-empty format and never let the
+        # restore itself raise (we already saved what we needed).
+        try:
+            if prev_fmt:
+                img.file_format = prev_fmt
+        except Exception:
+            pass
         img.filepath_raw = prev_fp
 
 
